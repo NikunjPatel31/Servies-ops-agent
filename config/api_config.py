@@ -16,6 +16,7 @@ class APIConfig:
     OAUTH_URL = f"{BASE_URL}/api/oauth/token"
     REQUEST_SEARCH_URL = f"{BASE_URL}/api/request/search/byqual"
     STATUS_SEARCH_URL = f"{BASE_URL}/api/request/status/search/byqual"
+    REQUEST_DETAIL_URL = f"{BASE_URL}/api/request"  # Will append /{id}
     
     # OAuth Credentials
     USERNAME = "automind@motadata.com"

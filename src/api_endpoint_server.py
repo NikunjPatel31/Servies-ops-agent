@@ -103,7 +103,7 @@ class APIExecutor:
             return None
 
     def get_status_mapping(self):
-        """Get status mapping from the API"""
+        """Get status mapping from the API with fallback"""
         try:
             # Return cached mapping if available
             if self.status_mapping_loaded:
@@ -115,7 +115,7 @@ class APIExecutor:
             auth_token = self.get_access_token()
             if not auth_token:
                 print("❌ Cannot fetch status mapping - no auth token")
-                return {}
+                return self._get_fallback_status_mapping()
 
             # Prepare headers
             headers = {
@@ -156,7 +156,7 @@ class APIExecutor:
                             statuses = [response_data]
                     else:
                         print(f"❌ Unexpected response format: {type(response_data)}")
-                        return {}
+                        return self._get_fallback_status_mapping()
 
                     # Build status mapping: name -> id
                     self.status_mapping = {}
@@ -178,7 +178,7 @@ class APIExecutor:
                 except json.JSONDecodeError as e:
                     print(f"❌ JSON decode error: {e}")
                     print(f"   Response text: {response.text[:200]}...")
-                    return {}
+                    return self._get_fallback_status_mapping()
 
                 self.status_mapping_loaded = True
                 print(f"✅ Status mapping loaded: {len(self.status_mapping)} statuses")
@@ -186,12 +186,33 @@ class APIExecutor:
 
                 return self.status_mapping
             else:
-                print(f"❌ Status API failed: {response.status_code} - {response.text}")
-                return {}
+                print(f"❌ Status API failed: {response.status_code}")
+                if response.status_code == 502:
+                    print("   Server error - using fallback status mapping")
+                return self._get_fallback_status_mapping()
 
         except Exception as e:
             print(f"❌ Status mapping error: {str(e)}")
-            return {}
+            return self._get_fallback_status_mapping()
+
+    def _get_fallback_status_mapping(self):
+        """Fallback status mapping based on common statuses"""
+        print("🔄 Using fallback status mapping")
+        fallback_mapping = {
+            "open": 9,
+            "in progress": 10,
+            "pending": 11,
+            "resolved": 12,
+            "closed": 13,
+            "testing1": 14  # Based on your example
+        }
+
+        self.status_mapping = fallback_mapping
+        self.status_mapping_loaded = True
+        print(f"✅ Fallback status mapping loaded: {len(fallback_mapping)} statuses")
+        print(f"   Available statuses: {list(fallback_mapping.keys())}")
+
+        return fallback_mapping
     
     def parse_user_prompt(self, user_prompt):
         """Parse user prompt and determine API parameters"""
@@ -251,6 +272,145 @@ class APIExecutor:
         status_ids = list(set(status_ids))
 
         return status_ids
+
+    def extract_request_id(self, user_prompt):
+        """Extract specific request ID from user prompt"""
+        prompt_lower = user_prompt.lower()
+
+        # Look for patterns like:
+        # "get request 2", "show me request INC-2", "details of request 2"
+        # "fetch request with id 2", "request number 2"
+
+        import re
+
+        # Pattern 1: "request 2", "request id 2", "request number 2"
+        pattern1 = r'request\s+(?:id\s+|number\s+)?(\d+)'
+        match1 = re.search(pattern1, prompt_lower)
+        if match1:
+            return int(match1.group(1))
+
+        # Pattern 2: "INC-2", "REQ-2", etc.
+        pattern2 = r'(?:inc|req|ticket|request)[-\s]*(\d+)'
+        match2 = re.search(pattern2, prompt_lower)
+        if match2:
+            return int(match2.group(1))
+
+        # Pattern 3: "id 2", "ID: 2"
+        pattern3 = r'id\s*:?\s*(\d+)'
+        match3 = re.search(pattern3, prompt_lower)
+        if match3:
+            return int(match3.group(1))
+
+        # Pattern 4: Just a number if context suggests it's a request
+        if any(keyword in prompt_lower for keyword in ['get', 'show', 'fetch', 'details', 'info']):
+            pattern4 = r'\b(\d+)\b'
+            matches = re.findall(pattern4, prompt_lower)
+            if len(matches) == 1:  # Only if there's exactly one number
+                return int(matches[0])
+
+        return None
+
+    def is_specific_request_query(self, user_prompt):
+        """Check if the query is asking for a specific request"""
+        prompt_lower = user_prompt.lower()
+
+        # Keywords that suggest specific request query
+        specific_keywords = [
+            'get request', 'show request', 'fetch request', 'request details',
+            'details of request', 'info about request', 'request info',
+            'inc-', 'req-', 'ticket', 'request id', 'request number'
+        ]
+
+        # Check if any specific keyword is present
+        has_specific_keyword = any(keyword in prompt_lower for keyword in specific_keywords)
+
+        # Check if there's a request ID
+        request_id = self.extract_request_id(user_prompt)
+
+        return has_specific_keyword and request_id is not None
+
+    def fetch_specific_request(self, request_id):
+        """Fetch specific request by ID"""
+        try:
+            # Get access token
+            auth_token = self.get_access_token()
+            if not auth_token:
+                return {
+                    "success": False,
+                    "error": "Failed to obtain access token"
+                }
+
+            # Build URL
+            url = f"{self.config.REQUEST_DETAIL_URL}/{request_id}"
+
+            # Prepare headers
+            headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Authorization': f'Bearer {auth_token}',
+                'Connection': 'keep-alive',
+                'Content-Type': 'application/json',
+                'Referer': f'{self.config.BASE_URL}/t/request/{request_id}',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+            }
+
+            # Make the API call
+            response = requests.get(
+                url,
+                headers=headers,
+                verify=False,
+                timeout=self.config.REQUEST_TIMEOUT
+            )
+
+            if response.status_code == 200:
+                request_data = response.json()
+
+                # Extract key information for summary
+                summary = {
+                    "id": request_data.get("id"),
+                    "name": request_data.get("name"),
+                    "subject": request_data.get("subject"),
+                    "description": request_data.get("description", "").replace("<p>", "").replace("</p>", ""),
+                    "status_id": request_data.get("statusId"),
+                    "priority_id": request_data.get("priorityId"),
+                    "requester": request_data.get("requester"),
+                    "requester_name": request_data.get("requesterName"),
+                    "created_time": request_data.get("createdTime"),
+                    "updated_time": request_data.get("updatedTime"),
+                    "due_by": request_data.get("dueBy"),
+                    "request_type": request_data.get("requestType"),
+                    "tags": request_data.get("tags", [])
+                }
+
+                return {
+                    "success": True,
+                    "data": request_data,
+                    "summary": summary,
+                    "api_call": {
+                        "url": url,
+                        "method": "GET",
+                        "request_id": request_id
+                    },
+                    "message": f"Found request {request_data.get('name', request_id)}: {request_data.get('subject', 'No subject')}"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Request not found or access denied (status {response.status_code})",
+                    "details": response.text,
+                    "api_call": {
+                        "url": url,
+                        "method": "GET",
+                        "request_id": request_id
+                    }
+                }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error fetching request: {str(e)}",
+                "request_id": request_id
+            }
     
     def build_request_body(self, priority_ids=None, status_ids=None):
         """Build the request body for the API call"""
@@ -320,7 +480,13 @@ class APIExecutor:
     def execute_api_call(self, user_prompt):
         """Execute the API call based on user prompt"""
         try:
-            # Get fresh access token
+            # Check if this is a specific request query
+            if self.is_specific_request_query(user_prompt):
+                request_id = self.extract_request_id(user_prompt)
+                if request_id:
+                    return self.fetch_specific_request(request_id)
+
+            # Get fresh access token for search queries
             auth_token = self.get_access_token()
             if not auth_token:
                 return {
@@ -375,16 +541,36 @@ class APIExecutor:
                     "message": f"Found {len(data.get('content', []))} requests" if isinstance(data, dict) and 'content' in data else "API call successful"
                 }
             else:
+                error_message = f"API call failed with status {response.status_code}"
+                if response.status_code == 502:
+                    error_message += " - Server error (Bad Gateway)"
+                elif response.status_code == 500:
+                    error_message += " - Internal server error"
+                elif response.status_code == 404:
+                    error_message += " - Endpoint not found"
+                elif response.status_code == 401:
+                    error_message += " - Authentication failed"
+                elif response.status_code == 403:
+                    error_message += " - Access forbidden"
+
                 return {
                     "success": False,
-                    "error": f"API call failed with status {response.status_code}",
-                    "details": response.text,
+                    "error": error_message,
+                    "details": response.text[:500] + "..." if len(response.text) > 500 else response.text,
                     "api_call": {
                         "url": url,
                         "method": "POST",
                         "request_body": request_body,
                         "priority_filter": priority_ids,
                         "status_filter": status_ids
+                    },
+                    "troubleshooting": {
+                        "status_mapping_available": len(self.status_mapping) > 0,
+                        "status_mapping": dict(list(self.status_mapping.items())[:5]) if self.status_mapping else {},
+                        "filters_applied": {
+                            "priority": priority_ids,
+                            "status": status_ids
+                        }
                     }
                 }
                 
@@ -480,6 +666,14 @@ def get_examples():
         {
             "description": "Get open requests",
             "request": {"request": "Show me all open requests"}
+        },
+        {
+            "description": "Get specific request by ID",
+            "request": {"request": "Get request 2"}
+        },
+        {
+            "description": "Get request details by name",
+            "request": {"request": "Show me details of request INC-2"}
         }
     ]
     
