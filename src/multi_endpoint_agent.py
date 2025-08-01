@@ -24,6 +24,7 @@ class MultiEndpointAgent:
         self.status_mapping = {}
         self.category_mapping = {}
         self.department_mapping = {}
+        self.urgency_mapping = {}
 
         # Mapping loaded flags
         self.user_mapping_loaded = False
@@ -32,6 +33,7 @@ class MultiEndpointAgent:
         self.status_mapping_loaded = False
         self.category_mapping_loaded = False
         self.department_mapping_loaded = False
+        self.urgency_mapping_loaded = False
 
         # Train the agent with comprehensive knowledge
         self.train_from_data()
@@ -311,6 +313,11 @@ class MultiEndpointAgent:
         """Detect which endpoint to use based on user prompt"""
         prompt_lower = user_prompt.lower()
 
+        # Check for explicit request mentions first (highest priority)
+        if any(word in prompt_lower for word in ['get request', 'show request', 'list request', 'find request', 'search request']):
+            print(f"🎯 Detected endpoint: requests (explicit request mention)")
+            return 'requests'
+
         # Request-related keywords
         request_keywords = [
             'request', 'ticket', 'incident', 'issue', 'problem', 'task',
@@ -330,9 +337,9 @@ class MultiEndpointAgent:
             'who is', 'user details', 'technician details'
         ]
 
-        # Urgency-related keywords
+        # Urgency-related keywords (only for urgency data queries, not filtering)
         urgency_keywords = [
-            'urgency', 'urgent', 'urgency level', 'urgency mapping'
+            'urgency mapping', 'urgency levels', 'list urgency', 'show urgency', 'get urgency'
         ]
 
         # Count keyword matches
@@ -340,6 +347,10 @@ class MultiEndpointAgent:
         catalog_score = sum(1 for keyword in catalog_keywords if keyword in prompt_lower)
         user_score = sum(1 for keyword in user_keywords if keyword in prompt_lower)
         urgency_score = sum(1 for keyword in urgency_keywords if keyword in prompt_lower)
+
+        # Boost request score if urgency is used as a filter (not as data query)
+        if 'urgency is' in prompt_lower or 'urgency as' in prompt_lower or 'with urgency' in prompt_lower:
+            request_score += 2  # Boost requests when urgency is used as filter
 
         # Determine endpoint based on highest score
         scores = {
@@ -452,6 +463,7 @@ class MultiEndpointAgent:
         department_patterns = [
             r'\bdepartment\s+(?:is|equals?|as)\s+',
             r'(?:with|having)\s+department\s+',
+            r'(?:and)\s+department\s+',
             r'requests?\s+(?:with|having|where)\s+department\s+'
         ]
 
@@ -949,6 +961,256 @@ class MultiEndpointAgent:
         common_chars = set(search_term) & set(department_name)
         if common_chars:
             return len(common_chars) / max(len(search_term), len(department_name)) * 0.4
+
+        return 0.0
+
+    def resolve_urgency_references(self, user_prompt: str) -> Dict[str, Any]:
+        """Resolve urgency names to IDs in the prompt"""
+        import re
+        import requests
+
+        print(f"🔍 Urgency analysis: '{user_prompt}'")
+
+        # Step 1: Fetch all available urgencies from the system
+        urgency_mapping = self._fetch_dynamic_urgency_mapping()
+        if not urgency_mapping:
+            print("❌ Failed to fetch dynamic urgency mapping")
+            return {'included': {}, 'excluded': {}, 'operator': 'in'}
+
+        print(f"✅ Fetched {len(urgency_mapping)} urgencies from system: {list(urgency_mapping.keys())}")
+
+        # Step 2: Detect urgency-related patterns (enhanced to stop at next field)
+        urgency_patterns = [
+            r'urgency\s+(?:is|equals?)\s+([a-z\s,and]+?)(?:\s+and\s+(?:status|priority|category|department|subject)|$)',
+            r'(?:with|having)\s+urgency\s+(?:is\s+|as\s+)?([a-z\s,and]+?)(?:\s+and\s+(?:status|priority|category|department|subject)|$)',
+            r'urgency\s+(?:as\s+)?([a-z\s,and]+?)(?:\s+and\s+(?:status|priority|category|department|subject)|$)',
+            r'requests?\s+(?:with|having|where)\s+urgency\s+(?:is\s+|as\s+)?([a-z\s,and]+?)(?:\s+and\s+(?:status|priority|category|department|subject)|$)',
+        ]
+
+        included_urgencies = {}
+        prompt_lower = user_prompt.lower()
+
+        # Step 3: Parse explicit urgency mentions from patterns
+        for pattern in urgency_patterns:
+            matches = re.findall(pattern, prompt_lower)
+            for match in matches:
+                print(f"🎯 Found urgency pattern: '{match}' from pattern: {pattern}")
+                parsed_urgencies = self._parse_dynamic_urgency_list(match, urgency_mapping)
+                included_urgencies.update(parsed_urgencies)
+
+        # Step 4: Scan for direct urgency name mentions (context-aware)
+        for urgency_name, urgency_id in urgency_mapping.items():
+            # Skip if we already found this urgency from patterns
+            if urgency_name in included_urgencies:
+                continue
+
+            # Use word boundaries to ensure exact word matches, but exclude priority/status contexts
+            urgency_word_pattern = r'\b' + re.escape(urgency_name) + r'\b'
+
+            # Check if the urgency word appears in the prompt
+            if re.search(urgency_word_pattern, prompt_lower):
+                # Make sure it's not in a priority or status context
+                priority_context_patterns = [
+                    r'priority\s+(?:is|as|equals?)\s+[a-z\s]*\b' + re.escape(urgency_name) + r'\b',
+                    r'\bpriority\s+[a-z\s]*\b' + re.escape(urgency_name) + r'\b',
+                ]
+
+                status_context_patterns = [
+                    r'status\s+(?:is|as|equals?)\s+[a-z\s]*\b' + re.escape(urgency_name) + r'\b',
+                    r'\bstatus\s+[a-z\s]*\b' + re.escape(urgency_name) + r'\b',
+                ]
+
+                # Check if it's in priority context
+                in_priority_context = any(re.search(pattern, prompt_lower) for pattern in priority_context_patterns)
+                in_status_context = any(re.search(pattern, prompt_lower) for pattern in status_context_patterns)
+
+                if not in_priority_context and not in_status_context:
+                    included_urgencies[urgency_name] = urgency_id
+                    print(f"✅ Direct urgency match: '{urgency_name}' -> ID {urgency_id}")
+                else:
+                    print(f"🚫 Skipping '{urgency_name}' - found in priority/status context")
+
+        # Step 5: Return result
+        result = {
+            'included': included_urgencies,
+            'excluded': {},  # Urgencies typically don't have exclusion patterns
+            'operator': 'in'
+        }
+
+        print(f"🎯 Urgency resolution result: {result}")
+        return result
+
+    def _fetch_dynamic_urgency_mapping(self) -> Dict[str, int]:
+        """Fetch all available urgencies from the system dynamically"""
+        import requests
+        import json
+
+        try:
+            print("🔄 Fetching dynamic urgency mapping from API...")
+
+            # API endpoint for urgency search
+            url = "https://172.16.15.113/api/urgency/search/byqual"
+
+            # Get fresh access token
+            access_token = self.get_access_token()
+            if not access_token:
+                print("❌ Cannot fetch urgency mapping - no access token")
+                return {}
+
+            # Headers with fresh token
+            headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Authorization': f'Bearer {access_token}',
+                'Connection': 'keep-alive',
+                'Content-Type': 'application/json',
+                'Origin': 'https://172.16.15.113',
+                'Referer': 'https://172.16.15.113/admin/organization/urgency',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+            }
+
+            # Make the API call (POST request with empty body)
+            response = requests.post(url, headers=headers, json={}, verify=False, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                print(f"✅ Urgency API response received: {response.status_code}")
+
+                # Parse the response to extract urgency name -> ID mapping
+                urgency_mapping = {}
+
+                # Handle urgency response structure
+                if isinstance(data, dict) and 'objectList' in data:
+                    urgencies = data['objectList']
+                    print(f"   ⚡ Found objectList with {len(urgencies)} urgencies")
+
+                    # Build urgency mapping
+                    for urgency in urgencies:
+                        if isinstance(urgency, dict) and 'name' in urgency and 'id' in urgency:
+                            urgency_id = urgency['id']
+                            urgency_name = urgency['name'].lower().strip()
+                            urgency_mapping[urgency_name] = urgency_id
+                            print(f"   ⚡ Mapped: '{urgency_name}' -> ID {urgency_id}")
+
+                else:
+                    print(f"❌ Unexpected response format: {type(data)}")
+                    return {}
+
+                print(f"✅ Dynamic urgency mapping loaded: {len(urgency_mapping)} urgencies")
+                return urgency_mapping
+
+            else:
+                print(f"❌ Urgency API call failed: {response.status_code}")
+                print(f"   Response: {response.text[:200]}...")
+                return {}
+
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Network error fetching urgency mapping: {str(e)}")
+            return {}
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON decode error: {str(e)}")
+            return {}
+        except Exception as e:
+            print(f"❌ Unexpected error fetching urgency mapping: {str(e)}")
+            return {}
+
+    def _parse_dynamic_urgency_list(self, urgency_text: str, urgency_mapping: Dict[str, int]) -> Dict[str, int]:
+        """Parse urgency list using dynamic urgency mapping with intelligent matching"""
+        import re
+
+        parsed_urgencies = {}
+
+        print(f"🔍 Parsing urgency text: '{urgency_text}' against {len(urgency_mapping)} available urgencies")
+
+        # Split by various separators (enhanced for better parsing)
+        separators = [',', ' and ', ' or ', '&', '+', ';', ' ']
+        parts = [urgency_text.strip()]
+
+        # Apply separators iteratively to split the text
+        for sep in separators:
+            new_parts = []
+            for part in parts:
+                if sep in part:
+                    split_parts = [p.strip() for p in part.split(sep) if p.strip()]
+                    new_parts.extend(split_parts)
+                else:
+                    new_parts.append(part)
+            parts = new_parts
+
+        # Remove duplicates while preserving order
+        unique_parts = []
+        for part in parts:
+            if part not in unique_parts:
+                unique_parts.append(part)
+        parts = unique_parts
+
+        print(f"   🔍 Split into parts: {parts}")
+
+        # Clean and resolve each part
+        for part in parts:
+            part = re.sub(r'[^\w\s]', '', part).strip()  # Remove punctuation
+            if not part or len(part) < 2:  # Skip empty or single character parts
+                continue
+
+            print(f"   🔍 Analyzing part: '{part}' (length: {len(part)})")
+
+            # Try exact match first (case-insensitive)
+            part_lower = part.lower()
+            if part_lower in urgency_mapping:
+                parsed_urgencies[part_lower] = urgency_mapping[part_lower]
+                print(f"   ✅ Exact match: '{part}' -> '{part_lower}' -> ID {urgency_mapping[part_lower]}")
+                # Continue processing other parts for multiple urgencies
+                continue
+
+            # Try partial matching with intelligent scoring
+            if len(part) >= 2:  # Allow shorter matches for urgencies like "hi" (high)
+                best_matches = []
+                for urgency_name, urgency_id in urgency_mapping.items():
+                    # Skip if we already found this urgency
+                    if urgency_name in parsed_urgencies:
+                        continue
+                    score = self._calculate_urgency_match_score(part_lower, urgency_name)
+                    if score > 0.8:  # High threshold for partial matching to avoid false positives
+                        best_matches.append((urgency_name, urgency_id, score))
+
+                # Sort by score and take the best match
+                if best_matches:
+                    best_matches.sort(key=lambda x: x[2], reverse=True)
+                    best_urgency, best_id, best_score = best_matches[0]
+                    parsed_urgencies[best_urgency] = best_id
+                    print(f"   ✅ Partial match: '{part}' -> '{best_urgency}' -> ID {best_id} (score: {best_score:.2f})")
+                else:
+                    print(f"   ❌ No match found for: '{part}' (no valid partial matches)")
+            else:
+                print(f"   ❌ Skipping: '{part}' (too short for partial matching)")
+
+        print(f"🎯 Parsed {len(parsed_urgencies)} urgencies: {list(parsed_urgencies.keys())}")
+        return parsed_urgencies
+
+    def _calculate_urgency_match_score(self, search_term: str, urgency_name: str) -> float:
+        """Calculate matching score between search term and urgency name"""
+
+        # Exact match
+        if search_term == urgency_name:
+            return 1.0
+
+        # Contains match
+        if search_term in urgency_name or urgency_name in search_term:
+            return 0.9
+
+        # Word-based matching
+        search_words = set(search_term.split())
+        urgency_words = set(urgency_name.split())
+
+        if search_words & urgency_words:  # Common words
+            overlap = len(search_words & urgency_words)
+            total = len(search_words | urgency_words)
+            return 0.7 + (overlap / total) * 0.2
+
+        # Character similarity (simple)
+        common_chars = set(search_term) & set(urgency_name)
+        if common_chars:
+            return len(common_chars) / max(len(search_term), len(urgency_name)) * 0.5
 
         return 0.0
 
@@ -1468,10 +1730,10 @@ class MultiEndpointAgent:
 
         # Check for other field mentions that would indicate this is NOT a status query
         other_field_patterns = [
-            r'\bpriority\s+(?:is|are|in|equals?)',
-            r'\burgency\s+(?:is|are|in|equals?)',
-            r'\bcategory\s+(?:is|are|in|equals?)',
-            r'\bdepartment\s+(?:is|are|in|equals?)',
+            r'\bpriority\s+(?:is|are|in|equals?|as)',
+            r'\burgency\s+(?:is|are|in|equals?|as)',
+            r'\bcategory\s+(?:is|are|in|equals?|as)',
+            r'\bdepartment\s+(?:is|are|in|equals?|as)',
             r'\bassignee\s+(?:is|are|in|equals?)',
             r'\brequester\s+(?:is|are|in|equals?)'
         ]
@@ -1782,6 +2044,51 @@ class MultiEndpointAgent:
                 }
             })
 
+    def _add_urgency_filter(self, quals: list, urgency_result: Dict[str, Any]):
+        """Add urgency filter using PropertyOperandRest structure"""
+        if not urgency_result or (not urgency_result.get('included') and not urgency_result.get('excluded')):
+            return
+
+        # Handle inclusion filters
+        if urgency_result.get('included'):
+            included_ids = list(urgency_result['included'].values())
+            print(f"🎯 Creating urgency inclusion filter: {included_ids}")
+            quals.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.urgencyId"
+                },
+                "operator": "in",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "ListLongValueRest",
+                        "value": included_ids
+                    }
+                }
+            })
+
+        # Handle exclusion filters
+        if urgency_result.get('excluded'):
+            excluded_ids = list(urgency_result['excluded'].values())
+            print(f"🎯 Creating urgency exclusion filter: {excluded_ids}")
+            quals.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.urgencyId"
+                },
+                "operator": "not_in",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "ListLongValueRest",
+                        "value": excluded_ids
+                    }
+                }
+            })
+
     def _add_subject_filter(self, quals: list, subject_result: Dict[str, Any]):
         """Add subject filter using PropertyOperandRest structure"""
         if not subject_result or not subject_result.get('filters'):
@@ -1958,11 +2265,11 @@ class MultiEndpointAgent:
 
         # Resolve references with enhanced multi-value support
         user_refs = self.resolve_user_references(user_prompt)
-        urgency_refs = self.resolve_urgency_references(user_prompt)
         status_result = self.resolve_status_references(user_prompt)
         priority_result = self.resolve_priority_references(user_prompt)
         category_result = self.resolve_category_references(user_prompt)
         department_result = self.resolve_department_references(user_prompt)
+        urgency_result = self.resolve_urgency_references(user_prompt)
         subject_result = self.resolve_subject_references(user_prompt)
 
         # Add status filter - Enhanced for inclusion/exclusion scenarios
@@ -1977,31 +2284,14 @@ class MultiEndpointAgent:
         # Add department filter - Enhanced for inclusion/exclusion scenarios (using VariableOperandRest)
         self._add_department_filter(quals, department_result)
 
+        # Add urgency filter - Enhanced for inclusion/exclusion scenarios (using PropertyOperandRest)
+        self._add_urgency_filter(quals, urgency_result)
+
         # Add subject filter - Enhanced for contains/equals scenarios
         self._add_subject_filter(quals, subject_result)
 
         # Add business logic filters for complex scenarios
         self._add_business_logic_filters(quals, user_prompt)
-
-        # Add urgency filter - Enhanced for multiple values
-        if urgency_refs:
-            urgency_ids = list(urgency_refs.values())
-            print(f"🎯 Creating urgency filter with multiple values: {urgency_ids}")
-            quals.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.urgencyId"
-                },
-                "operator": "in",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "ListLongValueRest",
-                        "value": urgency_ids
-                    }
-                }
-            })
 
         # Add user/assignee filter - Enhanced for multiple values
         if user_refs:
@@ -2023,29 +2313,40 @@ class MultiEndpointAgent:
                 }
             })
 
-        # Add text search filters
+        # Add text search filters (skip fields already handled by dedicated resolvers)
         text_searches = self.extract_text_search(user_prompt)
+
+        # Skip fields that have already been handled by dedicated resolvers
+        fields_already_handled = set()
+        if subject_result.get('filters'):
+            fields_already_handled.add('subject')
+
         for field, search_term in text_searches.items():
-            quals.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": f"request.{field}"
-                },
-                "operator": "contains",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "StringValueRest",
-                        "value": search_term
+            if field not in fields_already_handled:
+                print(f"🎯 Creating general text search filter for {field}: '{search_term}'")
+                quals.append({
+                    "type": "RelationalQualificationRest",
+                    "leftOperand": {
+                        "type": "PropertyOperandRest",
+                        "key": f"request.{field}"
+                    },
+                    "operator": "contains",
+                    "rightOperand": {
+                        "type": "ValueOperandRest",
+                        "value": {
+                            "type": "StringValueRest",
+                            "value": search_term
+                        }
                     }
-                }
-            })
+                })
+            else:
+                print(f"🚫 Skipping general text search for {field}: '{search_term}' (already handled by dedicated resolver)")
 
         # Check if prompt has any filtering conditions
         has_filters = (status_result.get('included') or status_result.get('excluded') or
                       priority_result.get('included') or priority_result.get('excluded') or
-                      urgency_refs or user_refs or text_searches)
+                      urgency_result.get('included') or urgency_result.get('excluded') or
+                      user_refs or text_searches)
 
         # Check if prompt is asking for "all" without conditions
         prompt_lower = user_prompt.lower()
