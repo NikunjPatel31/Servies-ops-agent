@@ -16,6 +16,15 @@ class APIConfig:
     OAUTH_URL = f"{BASE_URL}/api/oauth/token"
     REQUEST_SEARCH_URL = f"{BASE_URL}/api/request/search/byqual"
     STATUS_SEARCH_URL = f"{BASE_URL}/api/request/status/search/byqual"
+    USER_SEARCH_URL = f"{BASE_URL}/api/users/search"  # Update with correct endpoint
+    TOKEN_URL = f"{BASE_URL}/api/oauth/token"  # OAuth token endpoint
+
+    # Authentication credentials (URL encoded)
+    USERNAME_ENCODED = "automind%40motadata.com"
+    PASSWORD_ENCODED = "2d7QdRn6bMI1Q2vQBhficw%3D%3D"
+
+    # Basic auth header value
+    BASIC_AUTH = "Basic ZmxvdG8td2ViLWFwcDpjN3ByZE5KRVdFQmt4NGw3ZmV6bA=="
     REQUEST_DETAIL_URL = f"{BASE_URL}/api/request"  # Will append /{id}
     
     # OAuth Credentials

@@ -177,80 +177,230 @@ Priority Filter Examples:
 • Exclude Low: "key": "request.priorityId", "operator": "not_in", "value": [1]
 """
         
-        # Priority filtering documentation
-        priority_doc = """
-Request Search API - Priority Filtering
-=======================================
+        # Comprehensive ITSM Qualification API Documentation
+        itsm_qualification_doc = """
+ITSM Qualification-Based Search API - Complete Reference
+========================================================
 
-Priority System:
-• Priority ID 1 = Low priority requests
-• Priority ID 2 = Medium priority requests
-• Priority ID 3 = High priority requests
-• Priority ID 4 = Urgent priority requests
+QUALIFICATION TYPES:
+===================
 
-Priority Filter Structure:
+1. FlatQualificationRest - Multiple conditions with AND logic
+{
+  "type": "FlatQualificationRest",
+  "quals": [/* Array of QualificationRest objects */]
+}
+
+2. RelationalQualificationRest - Compare left operand with right operand
 {
   "type": "RelationalQualificationRest",
-  "leftOperand": {
-    "type": "PropertyOperandRest",
-    "key": "request.priorityId"
-  },
-  "operator": "in",
-  "rightOperand": {
-    "type": "ValueOperandRest",
-    "value": {
-      "type": "ListLongValueRest",
-      "value": [1, 2]
-    }
-  }
+  "leftOperand": {/* OperandRest */},
+  "operator": "Equal",
+  "rightOperand": {/* OperandRest */}
 }
 
-Common Priority Queries:
-1. Low Priority Only:
-   "value": [1]
-
-2. Low + Medium Priority:
-   "value": [1, 2]
-
-3. High Priority Only:
-   "value": [3]
-
-4. High + Urgent Priority:
-   "value": [3, 4]
-
-5. Medium + High Priority:
-   "value": [2, 3]
-
-6. Urgent Priority Only:
-   "value": [4]
-
-Exclude Priority Examples:
-• Exclude Low Priority: "operator": "not_in", "value": [1]
-• Exclude Low + Medium: "operator": "not_in", "value": [1, 2]
-
-Combined Filters (Status + Priority):
-You can combine status and priority filters in the same request:
+3. BinaryQualificationRest - Combine two qualifications with AND/OR
 {
-  "qualDetails": {
-    "type": "FlatQualificationRest",
-    "quals": [
-      {
-        "type": "RelationalQualificationRest",
-        "leftOperand": {"type": "PropertyOperandRest", "key": "request.statusId"},
-        "operator": "not_in",
-        "rightOperand": {"type": "ValueOperandRest", "value": {"type": "ListLongValueRest", "value": [13]}}
-      },
-      {
-        "type": "RelationalQualificationRest",
-        "leftOperand": {"type": "PropertyOperandRest", "key": "request.priorityId"},
-        "operator": "in",
-        "rightOperand": {"type": "ValueOperandRest", "value": {"type": "ListLongValueRest", "value": [1, 2]}}
-      }
-    ]
-  }
+  "type": "BinaryQualificationRest",
+  "leftQual": {/* QualificationRest */},
+  "operator": "AND",
+  "rightQual": {/* QualificationRest */}
 }
 
-This gets active requests (not closed) with low or medium priority.
+4. UnaryQualificationRest - Single operand operations (IS_NULL, etc.)
+{
+  "type": "UnaryQualificationRest",
+  "operand": {/* OperandRest */},
+  "operator": "Is_Null"
+}
+
+5. BatchQualificationRest - Multiple qualifications with explicit operator
+{
+  "type": "BatchQualificationRest",
+  "quals": [/* Array */],
+  "operator": "OR"
+}
+
+OPERAND TYPES:
+=============
+
+1. PropertyOperandRest - Entity properties
+{
+  "type": "PropertyOperandRest",
+  "key": "request.statusId"
+}
+
+Common Property Keys:
+• request.statusId - Request status ID
+• request.priorityId - Priority ID
+• request.urgencyId - Urgency ID
+• request.impactId - Impact ID
+• request.name - Request name/subject
+• request.subject - Request subject
+• request.description - Request description
+• request.requesterId - Requester ID
+• request.technicianId - Assigned technician ID
+• request.groupId - Assigned group ID
+• request.categoryId - Category ID
+• request.createdTime - Creation timestamp
+• request.updatedTime - Last update timestamp
+• request.dueByTime - Due date timestamp
+• request.tags - Request tags
+
+2. ValueOperandRest - Actual values
+{
+  "type": "ValueOperandRest",
+  "value": {/* ValueRest object */}
+}
+
+3. CustomFieldOperandRest - Custom fields
+{
+  "type": "CustomFieldOperandRest",
+  "fieldName": "Department"
+}
+
+OPERATORS:
+=========
+
+Relational Operators:
+• Equal - Exact match
+• Not_Equal - Not equal
+• Like - SQL LIKE pattern
+• Contains - String contains
+• Not_Contains - String doesn't contain
+• Start_With - String starts with
+• End_With - String ends with
+• In - Value in list
+• Not_In - Value not in list
+• LessThan - Less than
+• LessThanOrEqual - Less than or equal
+• GreaterThan - Greater than
+• GreaterThanOrEqual - Greater than or equal
+• Between - Between two values
+• Before - Date before
+• After - Date after
+
+Case-Insensitive Variants:
+• Equal_Case_Insensitive
+• Not_Equal_Case_Insensitive
+• In_Case_Insensitive
+• Not_In_Case_Insensitive
+
+Member Operations:
+• Is_Member - Check if value is member of collection
+• All_Members_Exist - All values exist in collection
+• Any_Member_Or_All_Members_Exist - Any or all values exist
+• No_Members_Exist - No values exist in collection
+
+Unary Operators:
+• Is_Null - Field is null
+• Is_Not_Null - Field is not null
+• IS_EMPTY - Collection is empty
+• IS_NOT_EMPTY - Collection is not empty
+• IS_BLANK - String is blank/empty
+• IS_NOT_BLANK - String is not blank
+
+Binary Operators:
+• AND - Logical AND
+• OR - Logical OR
+
+VALUE TYPES:
+===========
+
+Basic Types:
+• StringValueRest - {"type": "StringValueRest", "value": "text"}
+• LongValueRest - {"type": "LongValueRest", "value": 123}
+• IntegerValueRest - {"type": "IntegerValueRest", "value": 42}
+• DoubleValueRest - {"type": "DoubleValueRest", "value": 3.14}
+• BooleanValueRest - {"type": "BooleanValueRest", "value": true}
+• TimeValueRest - {"type": "TimeValueRest", "value": "2024-01-15T10:30:00Z"}
+
+List Types:
+• ListLongValueRest - {"type": "ListLongValueRest", "value": [1, 2, 3]}
+• ListStringValueRest - {"type": "ListStringValueRest", "value": ["Open", "Closed"]}
+• ListIntegerValueRest - {"type": "ListIntegerValueRest", "value": [1, 2, 3]}
+
+COMMON PATTERNS:
+===============
+
+1. Status Filtering (Exclude closed):
+{
+  "type": "RelationalQualificationRest",
+  "leftOperand": {"type": "PropertyOperandRest", "key": "request.statusId"},
+  "operator": "Not_In",
+  "rightOperand": {"type": "ValueOperandRest", "value": {"type": "ListLongValueRest", "value": [13]}}
+}
+
+2. Priority Filtering:
+{
+  "type": "RelationalQualificationRest",
+  "leftOperand": {"type": "PropertyOperandRest", "key": "request.priorityId"},
+  "operator": "In",
+  "rightOperand": {"type": "ValueOperandRest", "value": {"type": "ListLongValueRest", "value": [1, 2]}}
+}
+
+3. Text Search in Subject:
+{
+  "type": "RelationalQualificationRest",
+  "leftOperand": {"type": "PropertyOperandRest", "key": "request.subject"},
+  "operator": "Contains",
+  "rightOperand": {"type": "ValueOperandRest", "value": {"type": "StringValueRest", "value": "urgent"}}
+}
+
+4. Date Range (Last 7 days):
+{
+  "type": "RelationalQualificationRest",
+  "leftOperand": {"type": "PropertyOperandRest", "key": "request.createdTime"},
+  "operator": "GreaterThanOrEqual",
+  "rightOperand": {"type": "ValueOperandRest", "value": {"type": "TimeValueRest", "value": "2024-01-08T00:00:00Z"}}
+}
+
+5. Null Check (Unassigned requests):
+{
+  "type": "UnaryQualificationRest",
+  "operand": {"type": "PropertyOperandRest", "key": "request.technicianId"},
+  "operator": "Is_Null"
+}
+
+6. Tag Filtering:
+{
+  "type": "RelationalQualificationRest",
+  "leftOperand": {"type": "PropertyOperandRest", "key": "request.tags"},
+  "operator": "All_Members_Exist",
+  "rightOperand": {"type": "ValueOperandRest", "value": {"type": "ListStringValueRest", "value": ["urgent", "hardware"]}}
+}
+
+COMPLEX EXAMPLES:
+================
+
+Multiple AND Conditions:
+{
+  "type": "FlatQualificationRest",
+  "quals": [
+    {/* Status filter */},
+    {/* Priority filter */},
+    {/* Date filter */}
+  ]
+}
+
+OR Logic:
+{
+  "type": "BinaryQualificationRest",
+  "leftQual": {/* High priority */},
+  "operator": "OR",
+  "rightQual": {/* Contains "critical" */}
+}
+
+Mixed Logic (AND + OR):
+{
+  "type": "BinaryQualificationRest",
+  "leftQual": {
+    "type": "FlatQualificationRest",
+    "quals": [{/* Status */}, {/* Priority */}]
+  },
+  "operator": "OR",
+  "rightQual": {/* Subject contains "critical" */}
+}
 """
 
         # Learn all the documentation
@@ -258,7 +408,7 @@ This gets active requests (not closed) with low or medium priority.
             ("Request Search API - Main Documentation", api_doc),
             ("Request Search API - Usage Examples", usage_examples),
             ("Request Search API - Technical Details", technical_details),
-            ("Request Search API - Priority Filtering", priority_doc)
+            ("ITSM Qualification API - Complete Reference", itsm_qualification_doc)
         ]
         
         for title, content in docs:

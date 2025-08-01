@@ -10,6 +10,7 @@ Server responds with actual API results.
 
 from flask import Flask, request, jsonify
 from request_search_api_agent import RequestSearchAPIAgent
+from multi_endpoint_agent import MultiEndpointAgent
 import requests
 import json
 import re
@@ -28,6 +29,7 @@ class APIExecutor:
 
     def __init__(self):
         self.agent = RequestSearchAPIAgent("APIExecutor")
+        self.multi_agent = MultiEndpointAgent()
         # Use configuration
         self.config = APIConfig
 
@@ -213,6 +215,99 @@ class APIExecutor:
         print(f"   Available statuses: {list(fallback_mapping.keys())}")
 
         return fallback_mapping
+
+    def get_user_mapping(self):
+        """Get user mapping from the API"""
+        try:
+            # Return cached mapping if available
+            if hasattr(self, 'user_mapping_loaded') and self.user_mapping_loaded:
+                return getattr(self, 'user_mapping', {})
+
+            print("👥 Fetching user mapping...")
+
+            # Get access token
+            auth_token = self.get_access_token()
+            if not auth_token:
+                print("❌ Cannot fetch user mapping - no auth token")
+                return {}
+
+            # Prepare headers
+            headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Authorization': f'Bearer {auth_token}',
+                'Connection': 'keep-alive',
+                'Content-Type': 'application/json',
+                'Origin': self.config.BASE_URL,
+                'Referer': f'{self.config.BASE_URL}/admin/users/',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+            }
+
+            # Make user API request
+            user_api_url = self.config.USER_SEARCH_URL
+
+            response = requests.post(
+                user_api_url,
+                headers=headers,
+                json={},  # Empty body or provide required parameters
+                verify=False,
+                timeout=self.config.REQUEST_TIMEOUT
+            )
+
+            if response.status_code == 200:
+                try:
+                    response_data = response.json()
+
+                    # Handle different response formats
+                    if isinstance(response_data, list):
+                        users = response_data
+                    elif isinstance(response_data, dict):
+                        # Check if it's a paginated response
+                        if 'objectList' in response_data:
+                            users = response_data['objectList']
+                        elif 'content' in response_data:
+                            users = response_data['content']
+                        else:
+                            users = [response_data]
+                    else:
+                        print(f"❌ Unexpected user response format: {type(response_data)}")
+                        return {}
+
+                    # Build user mapping: name -> id
+                    self.user_mapping = {}
+                    for user in users:
+                        if not isinstance(user, dict):
+                            continue
+
+                        user_name = user.get('name', '').lower()
+                        user_id = user.get('id')
+                        login_name = user.get('loginName', '').lower()
+                        email = user.get('email', '').lower()
+
+                        if user_name and user_id:
+                            self.user_mapping[user_name] = user_id
+                            # Also map login name and email if different
+                            if login_name and login_name != user_name:
+                                self.user_mapping[login_name] = user_id
+                            if email and email != user_name:
+                                self.user_mapping[email] = user_id
+
+                except json.JSONDecodeError as e:
+                    print(f"❌ JSON decode error: {e}")
+                    return {}
+
+                self.user_mapping_loaded = True
+                print(f"✅ User mapping loaded: {len(self.user_mapping)} users")
+                print(f"   Available users: {list(self.user_mapping.keys())[:5]}...")  # Show first 5
+
+                return self.user_mapping
+            else:
+                print(f"❌ User API failed: {response.status_code} - {response.text}")
+                return {}
+
+        except Exception as e:
+            print(f"❌ User mapping error: {str(e)}")
+            return {}
     
     def parse_user_prompt(self, user_prompt):
         """Parse user prompt and determine API parameters"""
@@ -329,6 +424,452 @@ class APIExecutor:
 
         return has_specific_keyword and request_id is not None
 
+    def extract_text_search(self, user_prompt):
+        """Extract text search terms from user prompt"""
+        prompt_lower = user_prompt.lower()
+        text_searches = {}
+
+        # Look for patterns like "subject contains", "description has", etc.
+        import re
+
+        # Pattern: "subject contains 'text'" or "subject has 'text'" (with quotes)
+        subject_pattern_quoted = r'subject\s+(?:contains|has|includes|with)\s+["\']([^"\']+)["\']'
+        subject_match_quoted = re.search(subject_pattern_quoted, prompt_lower)
+        if subject_match_quoted:
+            text_searches['subject'] = subject_match_quoted.group(1)
+
+        # Pattern: "subject contains text" (without quotes)
+        elif 'subject' in prompt_lower and any(op in prompt_lower for op in ['contains', 'has', 'includes', 'with']):
+            subject_pattern_unquoted = r'subject\s+(?:contains|has|includes|with)\s+(\w+)'
+            subject_match_unquoted = re.search(subject_pattern_unquoted, prompt_lower)
+            if subject_match_unquoted:
+                text_searches['subject'] = subject_match_unquoted.group(1)
+
+        # Pattern: "description contains 'text'" (with quotes)
+        desc_pattern_quoted = r'description\s+(?:contains|has|includes|with)\s+["\']([^"\']+)["\']'
+        desc_match_quoted = re.search(desc_pattern_quoted, prompt_lower)
+        if desc_match_quoted:
+            text_searches['description'] = desc_match_quoted.group(1)
+
+        # Pattern: "description contains text" (without quotes)
+        elif 'description' in prompt_lower and any(op in prompt_lower for op in ['contains', 'has', 'includes', 'with']):
+            desc_pattern_unquoted = r'description\s+(?:contains|has|includes|with)\s+(\w+)'
+            desc_match_unquoted = re.search(desc_pattern_unquoted, prompt_lower)
+            if desc_match_unquoted:
+                text_searches['description'] = desc_match_unquoted.group(1)
+
+        # Pattern: "name contains 'text'" or "title contains 'text'" (with quotes)
+        name_pattern_quoted = r'(?:name|title)\s+(?:contains|has|includes|with)\s+["\']([^"\']+)["\']'
+        name_match_quoted = re.search(name_pattern_quoted, prompt_lower)
+        if name_match_quoted:
+            text_searches['name'] = name_match_quoted.group(1)
+
+        # Pattern: "name contains text" (without quotes)
+        elif any(field in prompt_lower for field in ['name', 'title']) and any(op in prompt_lower for op in ['contains', 'has', 'includes', 'with']):
+            name_pattern_unquoted = r'(?:name|title)\s+(?:contains|has|includes|with)\s+(\w+)'
+            name_match_unquoted = re.search(name_pattern_unquoted, prompt_lower)
+            if name_match_unquoted:
+                text_searches['name'] = name_match_unquoted.group(1)
+
+        # General text search without field specification
+        if not text_searches:
+            # Only look for explicit text search patterns, not general "with" usage
+            # Look for "contains text", "having text", "includes text" but NOT "with status/priority"
+            text_search_patterns = [
+                r'contains\s+(\w+)',
+                r'having\s+(\w+)',
+                r'includes\s+(\w+)'
+            ]
+
+            for pattern in text_search_patterns:
+                match = re.search(pattern, prompt_lower)
+                if match:
+                    search_term = match.group(1)
+
+                    # Skip assignment-related terms and status-related terms
+                    skip_terms = ['unassigned', 'assigned', 'technician', 'status', 'priority']
+
+                    # Also skip if this appears to be a field-specific pattern
+                    field_context_patterns = [
+                        r'assignee\s+(?:contains|includes|in)\s+' + re.escape(search_term),
+                        r'technician\s+(?:contains|includes|in)\s+' + re.escape(search_term),
+                        r'group\s+(?:contains|includes|in)\s+' + re.escape(search_term),
+                        r'category\s+(?:contains|includes|in)\s+' + re.escape(search_term),
+                        r'requester\s+(?:contains|includes|in)\s+' + re.escape(search_term),
+                        r'impact\s+(?:contains|includes|in)\s+' + re.escape(search_term),
+                        r'urgency\s+(?:contains|includes|in)\s+' + re.escape(search_term)
+                    ]
+
+                    is_field_context = any(re.search(fp, prompt_lower) for fp in field_context_patterns)
+
+                    if search_term not in skip_terms and not is_field_context:
+                        # Default to subject search
+                        text_searches['subject'] = search_term
+                        break
+
+        return text_searches
+
+    def extract_date_filters(self, user_prompt):
+        """Extract date-based filters from user prompt"""
+        prompt_lower = user_prompt.lower()
+        date_filters = []
+
+        import datetime
+        import re
+
+        # Common date patterns
+        if 'today' in prompt_lower:
+            today = datetime.datetime.now().strftime('%Y-%m-%dT00:00:00Z')
+            date_filters.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.createdTime"
+                },
+                "operator": "GreaterThanOrEqual",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "TimeValueRest",
+                        "value": today
+                    }
+                }
+            })
+
+        elif 'yesterday' in prompt_lower:
+            yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y-%m-%dT00:00:00Z')
+            date_filters.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.createdTime"
+                },
+                "operator": "GreaterThanOrEqual",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "TimeValueRest",
+                        "value": yesterday
+                    }
+                }
+            })
+
+        elif 'last week' in prompt_lower or 'past week' in prompt_lower:
+            last_week = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime('%Y-%m-%dT00:00:00Z')
+            date_filters.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.createdTime"
+                },
+                "operator": "GreaterThanOrEqual",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "TimeValueRest",
+                        "value": last_week
+                    }
+                }
+            })
+
+        elif 'last month' in prompt_lower or 'past month' in prompt_lower:
+            last_month = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%dT00:00:00Z')
+            date_filters.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.createdTime"
+                },
+                "operator": "GreaterThanOrEqual",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "TimeValueRest",
+                        "value": last_month
+                    }
+                }
+            })
+
+        # Pattern for "last X days"
+        days_pattern = r'last\s+(\d+)\s+days?'
+        days_match = re.search(days_pattern, prompt_lower)
+        if days_match:
+            days = int(days_match.group(1))
+            past_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime('%Y-%m-%dT00:00:00Z')
+            date_filters.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.createdTime"
+                },
+                "operator": "GreaterThanOrEqual",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "TimeValueRest",
+                        "value": past_date
+                    }
+                }
+            })
+
+        return date_filters
+
+    def extract_assignment_filters(self, user_prompt):
+        """Extract assignment-related filters from user prompt"""
+        prompt_lower = user_prompt.lower()
+        assignment_filters = []
+
+        import re
+
+        # Pattern 1: "assignee contains/includes/in {value}" - use 'in' operator
+        assignee_value_patterns = [
+            r'assignee\s+(?:contains|includes|in)\s+(\w+)',
+            r'technician\s+(?:contains|includes|in)\s+(\w+)',
+            r'assigned\s+to\s+(\w+)',
+            r'assignee\s+(?:is|=|equals?)\s+(\w+)'
+        ]
+
+        for pattern in assignee_value_patterns:
+            match = re.search(pattern, prompt_lower)
+            if match:
+                assignee_value = match.group(1)
+
+                # Map assignee values to IDs
+                assignee_mapping = {
+                    'unassigned': 0,  # "unassigned" maps to ID 0, not null
+                    'none': 0,
+                    'null': 0,
+                    '0': 0,
+                    '1': 1,
+                    '2': 2,
+                    '3': 3,
+                    '4': 4,
+                    '5': 5
+                }
+
+                # Check if it's a mapped value or try to convert to int
+                if assignee_value in assignee_mapping:
+                    assignee_id = assignee_mapping[assignee_value]
+                else:
+                    try:
+                        assignee_id = int(assignee_value)
+                    except ValueError:
+                        # If not a number, look up user by name
+                        print(f"🔍 Looking up user: {assignee_value}")
+                        user_mapping = self.get_user_mapping()
+
+                        # Try to find user by name (case-insensitive)
+                        assignee_value_lower = assignee_value.lower()
+                        if assignee_value_lower in user_mapping:
+                            assignee_id = user_mapping[assignee_value_lower]
+                            print(f"✅ Found user '{assignee_value}' with ID: {assignee_id}")
+                        else:
+                            # Try partial matching
+                            matching_users = {name: uid for name, uid in user_mapping.items()
+                                            if assignee_value_lower in name}
+
+                            if matching_users:
+                                # Use the first match
+                                matched_name, assignee_id = next(iter(matching_users.items()))
+                                print(f"✅ Found partial match '{matched_name}' with ID: {assignee_id}")
+                            else:
+                                print(f"❌ User '{assignee_value}' not found in user mapping")
+                                print(f"   Available users: {list(user_mapping.keys())[:10]}")
+                                # Fallback to string search in requesterName
+                                assignment_filters.append({
+                                    "type": "RelationalQualificationRest",
+                                    "leftOperand": {
+                                        "type": "PropertyOperandRest",
+                                        "key": "request.requesterName"
+                                    },
+                                    "operator": "contains",
+                                    "rightOperand": {
+                                        "type": "ValueOperandRest",
+                                        "value": {
+                                            "type": "StringValueRest",
+                                            "value": assignee_value
+                                        }
+                                    }
+                                })
+                                return assignment_filters
+
+                # Always use RelationalQualificationRest with 'in' operator for ID-based searches
+                assignment_filters.append({
+                    "type": "RelationalQualificationRest",
+                    "leftOperand": {
+                        "type": "PropertyOperandRest",
+                        "key": "request.technicianId"
+                    },
+                    "operator": "in",
+                    "rightOperand": {
+                        "type": "ValueOperandRest",
+                        "value": {
+                            "type": "ListLongValueRest",
+                            "value": [assignee_id]
+                        }
+                    }
+                })
+                return assignment_filters
+
+        # Pattern 2: General unassigned patterns (fallback) - only for simple cases
+        # Only use is_null for very specific unassigned patterns that don't use "contains/includes/in"
+        simple_unassigned_patterns = [
+            'get all unassigned', 'show unassigned', 'find unassigned',
+            'not assigned', 'no technician', 'without technician'
+        ]
+
+        if any(pattern in prompt_lower for pattern in simple_unassigned_patterns):
+            assignment_filters.append({
+                "type": "UnaryQualificationRest",
+                "operand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.technicianId"
+                },
+                "operator": "is_null"
+            })
+
+        # Pattern 3: General assigned patterns (fallback)
+        elif any(keyword in prompt_lower for keyword in ['has technician', 'with technician']) and 'contains' not in prompt_lower and 'includes' not in prompt_lower:
+            assignment_filters.append({
+                "type": "UnaryQualificationRest",
+                "operand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.technicianId"
+                },
+                "operator": "is_not_null"
+            })
+
+        return assignment_filters
+
+    def extract_general_field_filters(self, user_prompt):
+        """Extract general field filters with contains/includes/in operators"""
+        prompt_lower = user_prompt.lower()
+        field_filters = []
+
+        import re
+
+        # Pattern: "{field} contains/includes/in {value}"
+        # Map common field names to actual property keys
+        field_mapping = {
+            'assignee': 'request.technicianId',
+            'technician': 'request.technicianId',
+            'requester': 'request.requesterId',
+            'group': 'request.groupId',
+            'category': 'request.categoryId',
+            'impact': 'request.impactId',
+            'urgency': 'request.urgencyId',
+            'location': 'request.locationId',
+            'department': 'request.departmentId'
+        }
+
+        # Pattern: "field contains/includes/in value"
+        for field_name, property_key in field_mapping.items():
+            patterns = [
+                rf'{field_name}\s+(?:contains|includes|in)\s+(\w+)',
+                rf'{field_name}\s+(?:is|=|equals?)\s+(\w+)'
+            ]
+
+            for pattern in patterns:
+                match = re.search(pattern, prompt_lower)
+                if match:
+                    field_value = match.group(1)
+
+                    # Skip if this is handled by specific extractors
+                    if field_name in ['assignee', 'technician']:
+                        # Skip all assignee/technician patterns as they're handled by assignment filters
+                        continue
+
+                    # Try to convert to ID if it's a number
+                    try:
+                        field_id = int(field_value)
+                        field_filters.append({
+                            "type": "RelationalQualificationRest",
+                            "leftOperand": {
+                                "type": "PropertyOperandRest",
+                                "key": property_key
+                            },
+                            "operator": "in",
+                            "rightOperand": {
+                                "type": "ValueOperandRest",
+                                "value": {
+                                    "type": "ListLongValueRest",
+                                    "value": [field_id]
+                                }
+                            }
+                        })
+                    except ValueError:
+                        # If not a number, use string comparison
+                        field_filters.append({
+                            "type": "RelationalQualificationRest",
+                            "leftOperand": {
+                                "type": "PropertyOperandRest",
+                                "key": property_key
+                            },
+                            "operator": "contains",
+                            "rightOperand": {
+                                "type": "ValueOperandRest",
+                                "value": {
+                                    "type": "StringValueRest",
+                                    "value": field_value
+                                }
+                            }
+                        })
+
+                    break  # Only process first match per field
+
+        return field_filters
+
+    def extract_tag_filters(self, user_prompt):
+        """Extract tag-based filters from user prompt"""
+        prompt_lower = user_prompt.lower()
+        tag_filters = []
+
+        import re
+
+        # Pattern: "tagged with 'tag'" or "has tag 'tag'"
+        tag_pattern = r'(?:tagged?\s+with|has\s+tags?|with\s+tags?)\s+["\']([^"\']+)["\']'
+        tag_matches = re.findall(tag_pattern, prompt_lower)
+
+        if tag_matches:
+            # Multiple tags - all must exist
+            tag_filters.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.tags"
+                },
+                "operator": "All_Members_Exist",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "ListStringValueRest",
+                        "value": tag_matches
+                    }
+                }
+            })
+
+        # Pattern: "tag contains 'text'"
+        tag_contains_pattern = r'tags?\s+(?:contains?|includes?)\s+["\']([^"\']+)["\']'
+        tag_contains_match = re.search(tag_contains_pattern, prompt_lower)
+        if tag_contains_match:
+            tag_filters.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.tags"
+                },
+                "operator": "Contains",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "StringValueRest",
+                        "value": tag_contains_match.group(1)
+                    }
+                }
+            })
+
+        return tag_filters
+
     def fetch_specific_request(self, request_id):
         """Fetch specific request by ID"""
         try:
@@ -412,13 +953,35 @@ class APIExecutor:
                 "request_id": request_id
             }
     
-    def build_request_body(self, priority_ids=None, status_ids=None):
-        """Build the request body for the API call"""
+    def build_advanced_qualification(self, user_prompt):
+        """Build advanced qualification based on natural language prompt"""
+        prompt_lower = user_prompt.lower()
+
+        # Extract different types of filters
+        priority_ids = self.extract_priority_filter(user_prompt)
+        status_ids = self.extract_status_filter(user_prompt)
+
+        # Extract text search terms
+        text_search = self.extract_text_search(user_prompt)
+
+        # Extract date filters
+        date_filters = self.extract_date_filters(user_prompt)
+
+        # Extract assignment filters
+        assignment_filters = self.extract_assignment_filters(user_prompt)
+
+        # Extract tag filters
+        tag_filters = self.extract_tag_filters(user_prompt)
+
+        # Extract general field filters
+        general_field_filters = self.extract_general_field_filters(user_prompt)
+
+        # Build qualification list
         quals = []
 
-        # Handle status filtering
+        # Handle status filtering - only add if user specified status OR no status specified
         if status_ids:
-            # If specific statuses are requested, use them
+            # User specified specific status(es) - use only those
             quals.append({
                 "type": "RelationalQualificationRest",
                 "leftOperand": {
@@ -435,7 +998,113 @@ class APIExecutor:
                 }
             })
         else:
-            # Default: exclude closed requests (status ID 13)
+            # No specific status mentioned - check if we should add default filter
+            # Only add default "exclude closed" if no other specific filters are present
+            has_other_filters = (priority_ids or text_search or date_filters or
+                               assignment_filters or tag_filters or general_field_filters)
+
+            if not has_other_filters:
+                # No filters at all - add default exclude closed
+                quals.append({
+                    "type": "RelationalQualificationRest",
+                    "leftOperand": {
+                        "type": "PropertyOperandRest",
+                        "key": "request.statusId"
+                    },
+                    "operator": "not_in",
+                    "rightOperand": {
+                        "type": "ValueOperandRest",
+                        "value": {
+                            "type": "ListLongValueRest",
+                            "value": [self.config.CLOSED_STATUS_ID]
+                        }
+                    }
+                })
+            # If other filters are present, don't add default status filter
+
+        # Add priority filter
+        if priority_ids:
+            quals.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.priorityId"
+                },
+                "operator": "in",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "ListLongValueRest",
+                        "value": priority_ids
+                    }
+                }
+            })
+
+        # Add text search filters
+        if text_search:
+            for field, search_term in text_search.items():
+                quals.append({
+                    "type": "RelationalQualificationRest",
+                    "leftOperand": {
+                        "type": "PropertyOperandRest",
+                        "key": f"request.{field}"
+                    },
+                    "operator": "contains",
+                    "rightOperand": {
+                        "type": "ValueOperandRest",
+                        "value": {
+                            "type": "StringValueRest",
+                            "value": search_term
+                        }
+                    }
+                })
+
+        # Add date filters
+        for date_filter in date_filters:
+            quals.append(date_filter)
+
+        # Add assignment filters
+        for assignment_filter in assignment_filters:
+            quals.append(assignment_filter)
+
+        # Add tag filters
+        for tag_filter in tag_filters:
+            quals.append(tag_filter)
+
+        # Add general field filters
+        for field_filter in general_field_filters:
+            quals.append(field_filter)
+
+        return {
+            "qualDetails": {
+                "type": "FlatQualificationRest",
+                "quals": quals
+            }
+        }
+
+    def build_request_body(self, priority_ids=None, status_ids=None):
+        """Build the request body for the API call (legacy method)"""
+        quals = []
+
+        # Handle status filtering
+        if status_ids:
+            quals.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "PropertyOperandRest",
+                    "key": "request.statusId"
+                },
+                "operator": "in",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "ListLongValueRest",
+                        "value": status_ids
+                    }
+                }
+            })
+        else:
+            # Default: exclude closed requests
             quals.append({
                 "type": "RelationalQualificationRest",
                 "leftOperand": {
@@ -452,7 +1121,7 @@ class APIExecutor:
                 }
             })
 
-        # Add priority filter if specified
+        # Add priority filter
         if priority_ids:
             quals.append({
                 "type": "RelationalQualificationRest",
@@ -497,11 +1166,13 @@ class APIExecutor:
             
             # Parse the prompt
             params = self.parse_user_prompt(user_prompt)
+
+            # Extract filters for response metadata
             priority_ids = self.extract_priority_filter(user_prompt)
             status_ids = self.extract_status_filter(user_prompt)
 
-            # Build request body
-            request_body = self.build_request_body(priority_ids, status_ids)
+            # Use advanced qualification builder for complex queries
+            request_body = self.build_advanced_qualification(user_prompt)
             
             # Build URL with query parameters
             query_string = urlencode(params)
@@ -612,8 +1283,59 @@ def execute_request():
 
         user_prompt = data['request']
 
-        # Execute the API call (token is obtained automatically)
-        result = executor.execute_api_call(user_prompt)
+        # Execute using multi-endpoint agent with fallback to original agent
+        try:
+            # Try multi-endpoint agent first
+            multi_result = executor.multi_agent.execute_query(user_prompt)
+
+            # Check if qualification was generated successfully
+            qualification_generated = (
+                'qualification' in multi_result and
+                multi_result['qualification'] and
+                'qualDetails' in multi_result['qualification'] and
+                'quals' in multi_result['qualification']['qualDetails']
+            )
+
+            # Format the result to match original format
+            if qualification_generated:
+                # Qualification generated successfully - return 200
+                result = {
+                    "success": True,
+                    "endpoint_used": multi_result['endpoint'],
+                    "qualification": multi_result['qualification'],
+                    "user_prompt": user_prompt,
+                    "timestamp": __import__('datetime').datetime.now().isoformat()
+                }
+
+                # Check if API execution was successful
+                if 'error' not in multi_result['response']:
+                    # API execution successful - include data
+                    api_response = multi_result['response']
+                    result.update({
+                        "total_count": api_response.get('totalCount', len(api_response) if isinstance(api_response, list) else 0),
+                        "data": api_response.get('objectList', api_response if isinstance(api_response, list) else [])
+                    })
+                    print(f"✅ API execution successful - returned {result['total_count']} records")
+                else:
+                    # API execution failed but qualification was generated
+                    result["api_execution_note"] = "Qualification generated successfully, but API execution failed"
+                    result["api_error"] = multi_result['response']['error']
+                    result["total_count"] = 0
+                    result["data"] = []
+                    print(f"⚠️ API execution failed: {multi_result['response']['error']}")
+            else:
+                # No qualification generated - this is an actual error
+                result = {
+                    "success": False,
+                    "error": multi_result['response'].get('error', 'Failed to generate qualification'),
+                    "endpoint_used": multi_result['endpoint'],
+                    "user_prompt": user_prompt,
+                    "timestamp": __import__('datetime').datetime.now().isoformat()
+                }
+        except Exception as e:
+            print(f"⚠️ Multi-endpoint failed, falling back to original agent: {str(e)}")
+            # Fallback to original agent
+            result = executor.execute_api_call(user_prompt)
         
         # Add metadata
         result['user_prompt'] = user_prompt
@@ -621,7 +1343,11 @@ def execute_request():
         
         # Return appropriate status code
         status_code = 200 if result['success'] else 500
-        return jsonify(result), status_code
+        # Return appropriate status code
+        if result.get('success', False):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500, status_code
         
     except Exception as e:
         return jsonify({
@@ -674,21 +1400,121 @@ def get_examples():
         {
             "description": "Get request details by name",
             "request": {"request": "Show me details of request INC-2"}
+        },
+        {
+            "description": "Text search in subject",
+            "request": {"request": "Get all requests with subject contains 'urgent'"}
+        },
+        {
+            "description": "Date-based filtering",
+            "request": {"request": "Show me requests created today"}
+        },
+        {
+            "description": "Assignment filtering",
+            "request": {"request": "Get all unassigned requests"}
+        },
+        {
+            "description": "Tag-based filtering",
+            "request": {"request": "Find requests tagged with 'hardware'"}
+        },
+        {
+            "description": "Complex combination",
+            "request": {"request": "Get high priority unassigned requests created last week"}
         }
     ]
-    
+
+    multi_endpoint_examples = [
+        {
+            "description": "Urgency-based filtering (auto-resolves urgency names)",
+            "request": {"request": "Get all requests with urgency as high"}
+        },
+        {
+            "description": "User assignment with name resolution",
+            "request": {"request": "Get all requests assigned to AutoMind"}
+        },
+        {
+            "description": "Service catalog search",
+            "request": {"request": "Show me all service catalogs for employee onboarding"}
+        },
+        {
+            "description": "User details lookup",
+            "request": {"request": "Get user details for all technicians"}
+        },
+        {
+            "description": "Urgency levels mapping",
+            "request": {"request": "Show me all urgency levels"}
+        },
+        {
+            "description": "Service catalog with specific name",
+            "request": {"request": "Find service catalog named laptop"}
+        }
+    ]
+
     return jsonify({
-        "examples": examples,
+        "examples": examples + multi_endpoint_examples,
         "endpoint": "/execute-request",
+        "description": "Unified endpoint with multi-endpoint detection and auto-resolution",
+        "features": [
+            "Automatic endpoint detection (requests, urgency, service_catalog, users)",
+            "User name to ID resolution",
+            "Urgency level to ID resolution",
+            "Service catalog name resolution",
+            "Smart qualification building",
+            "Fallback to original agent if needed"
+        ],
         "method": "POST"
     })
 
+@app.route('/endpoints', methods=['GET'])
+def get_endpoints():
+    """Get available endpoints information"""
+    return jsonify({
+        "available_endpoints": [
+            {
+                "name": "requests",
+                "url": "/api/request/search/byqual",
+                "description": "Search and filter IT service requests",
+                "supported_filters": ["status", "priority", "urgency", "assignee", "requester", "category", "subject", "description", "tags", "date"]
+            },
+            {
+                "name": "urgency",
+                "url": "/api/urgency/search/byqual",
+                "description": "Get urgency levels mapping",
+                "supported_filters": []
+            },
+            {
+                "name": "service_catalog",
+                "url": "/api/service_catalog/search/byqual",
+                "description": "Search service catalog items",
+                "supported_filters": ["category", "status", "name", "description"]
+            },
+            {
+                "name": "users",
+                "url": "/api/technician/active/list",
+                "description": "Get active technicians/users list",
+                "supported_filters": []
+            }
+        ],
+        "auto_resolution": {
+            "user_names": "Automatically resolves user names to IDs",
+            "urgency_levels": "Automatically resolves urgency names to IDs",
+            "service_catalogs": "Automatically resolves service catalog names to IDs"
+        }
+    })
+
 if __name__ == '__main__':
-    print("🚀 Starting API Endpoint Server...")
-    print("📡 Endpoint: POST /execute-request")
-    print("📋 Example: {\"request\": \"Get all the request with priority as low\"}")
+    print("🚀 Starting Unified Multi-Endpoint API Server...")
+    print("📡 Main Endpoint: POST /execute-request")
+    print("🎯 Features:")
+    print("   • Automatic endpoint detection")
+    print("   • User name resolution")
+    print("   • Urgency level resolution")
+    print("   • Service catalog resolution")
+    print("   • Smart qualification building")
+    print("📋 Example: {\"request\": \"Get all requests with urgency as high\"}")
     print("🔗 Health check: GET /health")
     print("📚 Examples: GET /examples")
+    print("🔧 Endpoints info: GET /endpoints")
     print("=" * 60)
     
     app.run(host='0.0.0.0', port=5000, debug=True)
