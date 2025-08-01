@@ -11,6 +11,7 @@ Server responds with actual API results.
 from flask import Flask, request, jsonify
 from request_search_api_agent import RequestSearchAPIAgent
 from multi_endpoint_agent import MultiEndpointAgent
+from learning_system import LearningSystem
 try:
     from enhanced_multi_endpoint_agent import EnhancedMultiEndpointAgent
     ENHANCED_AGENT_AVAILABLE = True
@@ -37,6 +38,10 @@ class APIExecutor:
     def __init__(self):
         self.agent = RequestSearchAPIAgent("APIExecutor")
         self.multi_agent = MultiEndpointAgent()
+
+        # Initialize learning system
+        self.learning_system = LearningSystem()
+        print("🧠 Learning System initialized")
 
         # Initialize enhanced agent if available
         if ENHANCED_AGENT_AVAILABLE:
@@ -1055,6 +1060,20 @@ def execute_request():
                         "data": api_response.get('objectList', api_response if isinstance(api_response, list) else [])
                     })
                     print(f"✅ API execution successful - returned {result['total_count']} records")
+
+                    # Record successful interaction for learning
+                    try:
+                        filters_generated = multi_result['qualification']['qualDetails']['quals']
+                        executor.learning_system.record_successful_interaction(
+                            user_prompt=user_prompt,
+                            endpoint=multi_result['endpoint'],
+                            filters=filters_generated,
+                            api_success=True,
+                            result_count=result['total_count']
+                        )
+                        print(f"🧠 Recorded successful interaction for learning")
+                    except Exception as learning_error:
+                        print(f"⚠️ Failed to record learning data: {learning_error}")
                 else:
                     # API execution failed but qualification was generated
                     result["api_execution_note"] = "Qualification generated successfully, but API execution failed"
@@ -1103,6 +1122,121 @@ def health_check():
         "service": "API Endpoint Server",
         "timestamp": __import__('datetime').datetime.now().isoformat()
     })
+
+@app.route('/learning/statistics', methods=['GET'])
+def learning_statistics():
+    """Get learning system statistics"""
+    try:
+        stats = executor.learning_system.get_learning_statistics()
+        return jsonify({
+            "success": True,
+            "statistics": stats,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+@app.route('/learning/patterns', methods=['GET'])
+def learning_patterns():
+    """Get learned patterns"""
+    try:
+        field_type = request.args.get('field_type')
+        min_confidence = float(request.args.get('min_confidence', 0.7))
+
+        patterns = executor.learning_system.get_learned_patterns(
+            field_type=field_type,
+            min_confidence=min_confidence
+        )
+
+        return jsonify({
+            "success": True,
+            "patterns": patterns,
+            "filters": {
+                "field_type": field_type,
+                "min_confidence": min_confidence
+            },
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+@app.route('/learning/suggestions', methods=['GET'])
+def learning_suggestions():
+    """Get pattern improvement suggestions"""
+    try:
+        user_prompt = request.args.get('prompt', 'sample prompt')
+        current_patterns = {}  # Could be enhanced to get current patterns
+        suggestions = executor.learning_system.suggest_improved_patterns(user_prompt, current_patterns)
+
+        return jsonify({
+            "success": True,
+            "suggestions": suggestions,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+@app.route('/learning/export', methods=['POST'])
+def export_learning_data():
+    """Export learning data"""
+    try:
+        data = request.get_json() or {}
+        output_file = data.get('output_file', f"learning_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+
+        exported_patterns = executor.learning_system.export_learned_patterns(output_file)
+
+        return jsonify({
+            "success": True,
+            "exported_patterns": exported_patterns,
+            "output_file": output_file,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+@app.route('/learning/clear', methods=['POST'])
+def clear_learning_data():
+    """Clear all learning data (use with caution!)"""
+    try:
+        data = request.get_json() or {}
+        confirm = data.get('confirm', False)
+
+        if not confirm:
+            return jsonify({
+                "success": False,
+                "error": "Must set 'confirm': true to clear learning data",
+                "timestamp": datetime.now().isoformat()
+            }), 400
+
+        executor.learning_system.clear_learning_data(confirm=True)
+
+        return jsonify({
+            "success": True,
+            "message": "All learning data cleared",
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
 @app.route('/examples', methods=['GET'])
 def get_examples():
