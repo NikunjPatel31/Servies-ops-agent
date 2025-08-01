@@ -1,0 +1,15 @@
+# API Request Agent - Core Dependencies
+# =====================================
+
+# Web Framework
+flask>=2.3.0
+
+# HTTP Requests
+requests>=2.28.0
+
+# Built-in Python modules (no installation needed)
+# sqlite3, hashlib, json, datetime, pathlib, math, re, urllib
+
+# Development and Testing (optional)
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
