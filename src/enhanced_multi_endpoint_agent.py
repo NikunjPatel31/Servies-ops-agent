@@ -5,14 +5,29 @@ Replaces regex-based filtering with intelligent LLM understanding
 """
 
 import json
+import os
 import requests
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from dynamic_llm_agent import DynamicLLMAgent
 from local_intelligence_agent import LocalIntelligenceAgent
+from llama_agent import Llama32Agent
 
 class EnhancedMultiEndpointAgent:
-    def __init__(self, openai_api_key: str = None):
+    def __init__(self,
+                 openai_api_key: str = None,
+                 llm_type: str = "auto",
+                 llama_endpoint: str = None,
+                 llama_model: str = "llama3.2"):
+        """
+        Initialize Enhanced Multi-Endpoint Agent
+
+        Args:
+            openai_api_key: OpenAI API key (for GPT-4)
+            llm_type: "openai", "llama", "auto", or "llama_only" (Llama-only mode)
+            llama_endpoint: Llama API endpoint (e.g., Ollama)
+            llama_model: Llama model name
+        """
         # Use the same working config as demo agent
         self.base_url = "https://172.16.15.113"
         self.auth_token = None
@@ -20,16 +35,117 @@ class EnhancedMultiEndpointAgent:
         self.password = "2d7QdRn6bMI1Q2vQBhficw=="
         self.client_auth = "Basic ZmxvdG8td2ViLWFwcDpjN3ByZE5KRVdFQmt4NGw3ZmV6bA=="
 
-        # Initialize intelligent agents
-        self.llm_agent = DynamicLLMAgent(openai_api_key)
+        # Create config object for compatibility
+        class Config:
+            def __init__(self, base_url, username, password, client_auth):
+                self.base_url = base_url
+                self.username = username
+                self.password = password
+                self.client_auth = client_auth
+                self.auth_token = None
+
+            def get_headers(self):
+                """Get authentication headers for API requests"""
+                if not self.auth_token:
+                    self._get_access_token()
+
+                return {
+                    "Authorization": f"Bearer {self.auth_token}",
+                    "Content-Type": "application/json"
+                }
+
+            def _get_access_token(self):
+                """Get access token for API authentication"""
+                import requests
+
+                # Use correct OAuth endpoint
+                token_url = "http://172.16.15.113/api/oauth/token"
+
+                headers = {
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-GB,en;q=0.9',
+                    'Authorization': 'Basic ZmxvdG8td2ViLWFwcDpjN3ByZE5KRVdFQmt4NGw3ZmV6bA==',
+                    'Connection': 'keep-alive',
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Origin': 'http://172.16.15.113',
+                    'Referer': 'http://172.16.15.113/login?redirectFrom=%2Ft%2Frequest%2F',
+                    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+                }
+
+                # Use URL-encoded format as shown in curl
+                data = 'username=automind%40motadata.com&password=2d7QdRn6bMI1Q2vQBhficw%3D%3D&grant_type=password'
+
+                try:
+                    response = requests.post(token_url, headers=headers, data=data, verify=False)
+                    if response.status_code == 200:
+                        token_data = response.json()
+                        self.auth_token = token_data.get("access_token")
+                        print("✅ Config token obtained successfully")
+                    else:
+                        print(f"❌ Config token request failed: {response.status_code}")
+                except Exception as e:
+                    print(f"❌ Config token request error: {e}")
+
+        self.config = Config(self.base_url, self.username, self.password, self.client_auth)
+
+        # Check for Llama-only mode
+        self.llama_only_mode = (llm_type == "llama_only")
+        if self.llama_only_mode:
+            print("🦙 LLAMA-ONLY MODE: No fallbacks will be used")
+            llm_type = "llama"  # Convert to regular llama for detection
+
+        # Initialize intelligent agents based on availability
+        self.llm_type = self._detect_llm_type(llm_type, openai_api_key, llama_endpoint)
+
+        if self.llm_type == "llama":
+            self.llm_agent = Llama32Agent(
+                deployment_type="ollama",
+                api_endpoint=llama_endpoint,
+                model_name=llama_model
+            )
+            print(f"🦙 Using Llama 3.2 LLM: {llama_model}")
+        elif self.llm_type == "openai":
+            self.llm_agent = DynamicLLMAgent(openai_api_key)
+            print("🤖 Using OpenAI GPT-4 LLM")
+        else:
+            self.llm_agent = None
+            print("⚠️ No LLM available, using local intelligence only")
+
         self.local_agent = LocalIntelligenceAgent()
-        
+
         # Cache for dynamic mappings
         self.mappings_cache = {}
         self.cache_timestamp = None
         self.cache_duration = 300  # 5 minutes
-        
+
         print("🚀 Enhanced Multi-Endpoint Agent initialized with LLM intelligence")
+
+    def _detect_llm_type(self, llm_type: str, openai_api_key: str, llama_endpoint: str) -> str:
+        """Detect which LLM to use based on availability"""
+        if llm_type == "llama" or llm_type == "llama_only":
+            return "llama"
+        elif llm_type == "openai":
+            return "openai"
+        elif llm_type == "auto":
+            # Auto-detect based on availability
+            # Check for Llama endpoint first (prefer local)
+            if llama_endpoint or self._test_ollama_connection():
+                return "llama"
+            elif openai_api_key or os.getenv("OPENAI_API_KEY"):
+                return "openai"
+            else:
+                return "none"
+        else:
+            return "none"
+
+    def _test_ollama_connection(self) -> bool:
+        """Test if Ollama is available locally"""
+        try:
+            import requests
+            response = requests.get("http://localhost:11434/api/tags", timeout=2)
+            return response.status_code == 200
+        except:
+            return False
 
     def execute_request(self, user_prompt: str) -> Dict[str, Any]:
         """Execute user request with LLM-powered understanding"""
@@ -110,101 +226,195 @@ class EnhancedMultiEndpointAgent:
     def _generate_intelligent_filter(self, user_prompt: str) -> Dict[str, Any]:
         """Generate filter using intelligent agents with fallback strategy"""
         try:
-            # Try LLM agent first (if API key available)
-            if hasattr(self.llm_agent, 'openai_api_key') and self.llm_agent.openai_api_key:
+            # Try LLM agent first (if available)
+            if self.llm_agent:
                 try:
-                    print("🤖 Trying LLM agent...")
+                    if self.llm_type == "llama":
+                        print("🦙 Trying Llama 3.2 agent...")
+                        # Update field mappings for Llama agent
+                        if self.mappings_cache:
+                            self.llm_agent.update_field_mappings(self.mappings_cache)
+                    elif self.llm_type == "openai":
+                        print("🤖 Trying OpenAI GPT-4 agent...")
+
                     llm_payload = self.llm_agent.generate_filter_payload(user_prompt)
-                    if llm_payload.get('qualDetails', {}).get('quals'):
-                        print("✅ LLM agent succeeded")
+                    # Check if we have a valid qualDetails structure (quals can be empty for "all requests")
+                    if llm_payload.get('qualDetails') and 'quals' in llm_payload.get('qualDetails', {}):
+                        print(f"✅ {self.llm_type.upper()} LLM agent succeeded")
                         return llm_payload
                 except Exception as e:
-                    print(f"⚠️ LLM agent failed: {e}")
+                    print(f"⚠️ {self.llm_type.upper()} LLM agent failed: {e}")
 
-            # Fall back to local intelligence agent
+                    # In Llama-only mode, raise error instead of fallback
+                    if self.llama_only_mode:
+                        raise Exception(f"🦙 LLAMA-ONLY MODE: Llama failed - {e}")
+
+                    # Fast fallback on timeout or connection errors (only if not llama-only)
+                    if "timeout" in str(e).lower() or "connection" in str(e).lower():
+                        print("🚀 Fast fallback due to connection issues")
+
+            # In Llama-only mode, if we reach here, Llama failed
+            if self.llama_only_mode:
+                raise Exception("🦙 LLAMA-ONLY MODE: No Llama agent available")
+
+            # Fall back to local intelligence agent (only if not llama-only)
             print("🧠 Using Local Intelligence agent...")
             local_payload = self.local_agent.generate_filter_payload(user_prompt)
             print("✅ Local Intelligence agent succeeded")
             return local_payload
 
         except Exception as e:
+            # In Llama-only mode, propagate the error
+            if self.llama_only_mode:
+                raise e
+
             print(f"❌ All intelligent agents failed: {e}")
             return {"qualDetails": {"quals": [], "type": "FlatQualificationRest"}}
 
     def _fetch_priority_mapping(self) -> Dict[str, int]:
-        """Fetch priority mappings from API"""
-        try:
-            url = f"{self.base_url}/api/request/priority/search/byqual"
-            headers = self._get_auth_headers()
-            
-            response = requests.post(url, headers=headers, json={})
-            response.raise_for_status()
-            
-            data = response.json()
-            mapping = {}
-            
-            for item in data.get('objectList', []):
-                name = item.get('name', '').lower().strip()
-                priority_id = item.get('id')
-                if name and priority_id:
-                    mapping[name] = priority_id
-            
-            print(f"📊 Priority mapping: {mapping}")
-            return mapping
-            
-        except Exception as e:
-            print(f"❌ Failed to fetch priority mapping: {e}")
-            return {'low': 1, 'medium': 2, 'high': 3, 'critical': 4}  # Fallback
+        """Fetch priority mappings from API with re-authentication"""
+        max_retries = 2
+
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.base_url}/api/request/priority/search/byqual"
+                headers = self._get_auth_headers()
+
+                response = requests.post(url, headers=headers, json={}, verify=False)
+
+                # Check for 401 Unauthorized
+                if response.status_code == 401:
+                    print(f"🔐 401 Unauthorized in priority mapping (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        print("🔄 Re-authenticating and retrying...")
+                        self._clear_auth_cache()
+                        continue
+
+                response.raise_for_status()
+                data = response.json()
+                mapping = {}
+
+                for item in data.get('objectList', []):
+                    name = item.get('name', '').lower().strip()
+                    priority_id = item.get('id')
+                    if name and priority_id:
+                        mapping[name] = priority_id
+
+                print(f"📊 Priority mapping: {mapping}")
+                return mapping
+
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401 and attempt < max_retries - 1:
+                    print(f"🔐 HTTP 401 error in priority mapping (attempt {attempt + 1}/{max_retries})")
+                    print("🔄 Re-authenticating and retrying...")
+                    self._clear_auth_cache()
+                    continue
+                else:
+                    print(f"❌ Failed to fetch priority mapping: {e}")
+                    break
+            except Exception as e:
+                print(f"❌ Failed to fetch priority mapping: {e}")
+                break
+
+        return {'low': 1, 'medium': 2, 'high': 3, 'critical': 4}  # Fallback
 
     def _fetch_status_mapping(self) -> Dict[str, int]:
-        """Fetch status mappings from API"""
-        try:
-            url = f"{self.config.base_url}/api/request/status/search/byqual"
-            headers = self.config.get_headers()
-            
-            response = requests.post(url, headers=headers, json={})
-            response.raise_for_status()
-            
-            data = response.json()
-            mapping = {}
-            
-            for item in data.get('objectList', []):
-                name = item.get('name', '').lower().strip()
-                status_id = item.get('id')
-                if name and status_id:
-                    mapping[name] = status_id
-            
-            print(f"📊 Status mapping: {mapping}")
-            return mapping
-            
-        except Exception as e:
-            print(f"❌ Failed to fetch status mapping: {e}")
-            return {'open': 9, 'in progress': 10, 'pending': 11, 'closed': 13}  # Fallback
+        """Fetch status mappings from API with re-authentication"""
+        max_retries = 2
+
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.config.base_url}/api/request/status/search/byqual"
+                headers = self.config.get_headers()
+
+                response = requests.post(url, headers=headers, json={}, verify=False)
+
+                # Check for 401 Unauthorized
+                if response.status_code == 401:
+                    print(f"🔐 401 Unauthorized in status mapping (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        print("🔄 Re-authenticating and retrying...")
+                        self.config.auth_token = None
+                        self._clear_auth_cache()
+                        continue
+
+                response.raise_for_status()
+                data = response.json()
+                mapping = {}
+
+                for item in data.get('objectList', []):
+                    name = item.get('name', '').lower().strip()
+                    status_id = item.get('id')
+                    if name and status_id:
+                        mapping[name] = status_id
+
+                print(f"📊 Status mapping: {mapping}")
+                return mapping
+
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401 and attempt < max_retries - 1:
+                    print(f"🔐 HTTP 401 error in status mapping (attempt {attempt + 1}/{max_retries})")
+                    print("🔄 Re-authenticating and retrying...")
+                    self.config.auth_token = None
+                    self._clear_auth_cache()
+                    continue
+                else:
+                    print(f"❌ Failed to fetch status mapping: {e}")
+                    break
+            except Exception as e:
+                print(f"❌ Failed to fetch status mapping: {e}")
+                break
+
+        return {'open': 9, 'in progress': 10, 'pending': 11, 'closed': 13}  # Fallback
 
     def _fetch_user_mapping(self) -> Dict[str, int]:
-        """Fetch user mappings from API"""
-        try:
-            url = f"{self.config.base_url}/api/request/technician/search/byqual"
-            headers = self.config.get_headers()
-            
-            response = requests.post(url, headers=headers, json={})
-            response.raise_for_status()
-            
-            data = response.json()
-            mapping = {}
-            
-            for item in data.get('objectList', []):
-                name = item.get('name', '').lower().strip()
-                user_id = item.get('id')
-                if name and user_id:
-                    mapping[name] = user_id
-            
-            print(f"📊 User mapping: {dict(list(mapping.items())[:5])}...")
-            return mapping
-            
-        except Exception as e:
-            print(f"❌ Failed to fetch user mapping: {e}")
-            return {}  # Fallback
+        """Fetch user mappings from API with re-authentication"""
+        max_retries = 2
+
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.config.base_url}/api/request/technician/search/byqual"
+                headers = self.config.get_headers()
+
+                response = requests.post(url, headers=headers, json={}, verify=False)
+
+                # Check for 401 Unauthorized
+                if response.status_code == 401:
+                    print(f"🔐 401 Unauthorized in user mapping (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        print("🔄 Re-authenticating and retrying...")
+                        self.config.auth_token = None
+                        self._clear_auth_cache()
+                        continue
+
+                response.raise_for_status()
+                data = response.json()
+                mapping = {}
+
+                for item in data.get('objectList', []):
+                    name = item.get('name', '').lower().strip()
+                    user_id = item.get('id')
+                    if name and user_id:
+                        mapping[name] = user_id
+
+                print(f"📊 User mapping: {dict(list(mapping.items())[:5])}...")
+                return mapping
+
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401 and attempt < max_retries - 1:
+                    print(f"🔐 HTTP 401 error in user mapping (attempt {attempt + 1}/{max_retries})")
+                    print("🔄 Re-authenticating and retrying...")
+                    self.config.auth_token = None
+                    self._clear_auth_cache()
+                    continue
+                else:
+                    print(f"❌ Failed to fetch user mapping: {e}")
+                    break
+            except Exception as e:
+                print(f"❌ Failed to fetch user mapping: {e}")
+                break
+
+        return {}  # Fallback
 
     def _fetch_location_mapping(self) -> Dict[str, int]:
         """Fetch location mappings from API"""
@@ -220,43 +430,67 @@ class EnhancedMultiEndpointAgent:
             return {}
 
     def _fetch_category_mapping(self) -> Dict[str, int]:
-        """Fetch category mappings from API"""
-        try:
-            url = f"{self.config.base_url}/api/request/category"
-            headers = self.config.get_headers()
+        """Fetch category mappings from API with re-authentication"""
+        max_retries = 2
 
-            response = requests.get(url, headers=headers, verify=False)
-            response.raise_for_status()
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.config.base_url}/api/request/category"
+                headers = self.config.get_headers()
 
-            data = response.json()
-            mapping = {}
+                response = requests.get(url, headers=headers, verify=False)
 
-            # Handle different response formats
-            if isinstance(data, list):
-                categories = data
-            elif isinstance(data, dict):
-                if 'objectList' in data:
-                    categories = data['objectList']
-                elif 'content' in data:
-                    categories = data['content']
+                # Check for 401 Unauthorized
+                if response.status_code == 401:
+                    print(f"🔐 401 Unauthorized in category mapping (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        print("🔄 Re-authenticating and retrying...")
+                        self.config.auth_token = None
+                        self._clear_auth_cache()
+                        continue
+
+                response.raise_for_status()
+                data = response.json()
+                mapping = {}
+
+                # Handle different response formats
+                if isinstance(data, list):
+                    categories = data
+                elif isinstance(data, dict):
+                    if 'objectList' in data:
+                        categories = data['objectList']
+                    elif 'content' in data:
+                        categories = data['content']
+                    else:
+                        categories = [data]
                 else:
-                    categories = [data]
-            else:
-                categories = []
+                    categories = []
 
-            for item in categories:
-                if isinstance(item, dict) and 'name' in item and 'id' in item:
-                    name = item.get('name', '').lower().strip()
-                    category_id = item.get('id')
-                    if name and category_id:
-                        mapping[name] = category_id
+                for item in categories:
+                    if isinstance(item, dict) and 'name' in item and 'id' in item:
+                        name = item.get('name', '').lower().strip()
+                        category_id = item.get('id')
+                        if name and category_id:
+                            mapping[name] = category_id
 
-            print(f"📂 Category mapping: {mapping}")
-            return mapping
+                print(f"📂 Category mapping: {mapping}")
+                return mapping
 
-        except Exception as e:
-            print(f"❌ Failed to fetch category mapping: {e}")
-            return {'it': 5, 'hr': 7, 'facilities': 9, 'finance': 11, 'security': 13}  # Fallback
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401 and attempt < max_retries - 1:
+                    print(f"🔐 HTTP 401 error in category mapping (attempt {attempt + 1}/{max_retries})")
+                    print("🔄 Re-authenticating and retrying...")
+                    self.config.auth_token = None
+                    self._clear_auth_cache()
+                    continue
+                else:
+                    print(f"❌ Failed to fetch category mapping: {e}")
+                    break
+            except Exception as e:
+                print(f"❌ Failed to fetch category mapping: {e}")
+                break
+
+        return {'it': 5, 'hr': 7, 'facilities': 9, 'finance': 11, 'security': 13}  # Fallback
 
     def _determine_endpoint(self, user_prompt: str, filter_payload: Dict) -> str:
         """Determine the best endpoint based on request"""
@@ -265,28 +499,65 @@ class EnhancedMultiEndpointAgent:
         return "requests"
 
     def _execute_api_call(self, endpoint: str, filter_payload: Dict) -> Dict:
-        """Execute the API call with generated filter"""
-        try:
-            if endpoint == "requests":
-                url = f"{self.config.base_url}/api/request/search/byqual"
-            else:
-                raise ValueError(f"Unknown endpoint: {endpoint}")
-            
-            headers = self.config.get_headers()
-            
-            print(f"🌐 Calling API: {url}")
-            print(f"📋 Filter payload: {json.dumps(filter_payload, indent=2)}")
-            
-            response = requests.post(url, headers=headers, json=filter_payload)
-            response.raise_for_status()
-            
-            return response.json()
-            
-        except Exception as e:
-            print(f"❌ API call failed: {e}")
-            raise
+        """Execute the API call with generated filter and auto re-authentication"""
+        max_retries = 2
 
-    def _format_response(self, api_response: Dict, endpoint: str, 
+        for attempt in range(max_retries):
+            try:
+                if endpoint == "requests":
+                    # Add required query parameters - increased size to get all records
+                    url = f"{self.config.base_url}/api/request/search/byqual?offset=0&size=200&sort_by=createdTime"
+                else:
+                    raise ValueError(f"Unknown endpoint: {endpoint}")
+
+                headers = self.config.get_headers()
+
+                print(f"🌐 Calling API: {url}")
+                print(f"📋 Filter payload: {json.dumps(filter_payload, indent=2)}")
+
+                response = requests.post(url, headers=headers, json=filter_payload, verify=False)
+
+                # Check for 401 Unauthorized
+                if response.status_code == 401:
+                    print(f"🔐 401 Unauthorized detected (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        print("🔄 Re-authenticating and retrying...")
+                        # Clear current token and force re-authentication
+                        self.config.auth_token = None
+                        self._clear_auth_cache()
+                        continue
+                    else:
+                        print("❌ Re-authentication failed after maximum retries")
+
+                response.raise_for_status()
+                return response.json()
+
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401 and attempt < max_retries - 1:
+                    print(f"🔐 HTTP 401 error detected (attempt {attempt + 1}/{max_retries})")
+                    print("🔄 Re-authenticating and retrying...")
+                    # Clear current token and force re-authentication
+                    self.config.auth_token = None
+                    self._clear_auth_cache()
+                    continue
+                else:
+                    print(f"❌ API call failed: {e}")
+                    raise
+            except Exception as e:
+                print(f"❌ API call failed: {e}")
+                raise
+
+        # If we get here, all retries failed
+        raise Exception("API call failed after all retry attempts")
+
+    def _clear_auth_cache(self):
+        """Clear authentication cache to force re-authentication"""
+        self.auth_token = None
+        if hasattr(self, 'config') and hasattr(self.config, 'auth_token'):
+            self.config.auth_token = None
+        print("🔄 Authentication cache cleared")
+
+    def _format_response(self, api_response: Dict, endpoint: str,
                         filter_payload: Dict, user_prompt: str) -> Dict:
         """Format the final response"""
         return {
@@ -331,6 +602,48 @@ class EnhancedMultiEndpointAgent:
                 print(f"❌ '{prompt}' → Error: {e}")
         
         return results
+
+    def _get_auth_headers(self):
+        """Get authentication headers for API requests"""
+        if not self.auth_token:
+            self._get_access_token()
+
+        return {
+            "Authorization": f"Bearer {self.auth_token}",
+            "Content-Type": "application/json"
+        }
+
+    def _get_access_token(self):
+        """Get access token for API authentication"""
+        import requests
+
+        # Use correct OAuth endpoint
+        token_url = "http://172.16.15.113/api/oauth/token"
+
+        headers = {
+            'Accept': '*/*',
+            'Accept-Language': 'en-GB,en;q=0.9',
+            'Authorization': 'Basic ZmxvdG8td2ViLWFwcDpjN3ByZE5KRVdFQmt4NGw3ZmV6bA==',
+            'Connection': 'keep-alive',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Origin': 'http://172.16.15.113',
+            'Referer': 'http://172.16.15.113/login?redirectFrom=%2Ft%2Frequest%2F',
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+        }
+
+        # Use URL-encoded format as shown in curl
+        data = 'username=automind%40motadata.com&password=2d7QdRn6bMI1Q2vQBhficw%3D%3D&grant_type=password'
+
+        try:
+            response = requests.post(token_url, headers=headers, data=data, verify=False)
+            if response.status_code == 200:
+                token_data = response.json()
+                self.auth_token = token_data.get("access_token")
+                print("✅ Token obtained successfully")
+            else:
+                print(f"❌ Token request failed: {response.status_code}")
+        except Exception as e:
+            print(f"❌ Token request error: {e}")
 
 # Example usage and testing
 if __name__ == "__main__":

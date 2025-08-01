@@ -609,6 +609,23 @@ class LearningSystem:
             conn.commit()
             print(f"🧹 Cleaned up learning data older than {days_to_keep} days")
 
+    def clear_learning_data(self, confirm: bool = False):
+        """Clear all learning data (use with caution!)"""
+        if not confirm:
+            raise ValueError("Must confirm to clear all learning data")
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            # Clear all tables
+            cursor.execute('DELETE FROM successful_interactions')
+            cursor.execute('DELETE FROM learned_patterns')
+            cursor.execute('DELETE FROM learned_field_mappings')
+            cursor.execute('DELETE FROM user_feedback')
+
+            conn.commit()
+            print("🗑️ All learning data cleared")
+
     def get_pattern_suggestions_for_prompt(self, user_prompt: str) -> Dict[str, List[str]]:
         """
         Get specific pattern suggestions for a given prompt

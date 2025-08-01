@@ -7,8 +7,14 @@ Handles multiple ITSM endpoints with automatic user resolution and dynamic filte
 import json
 import requests
 import re
+import sys
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
+
+# Add parent directory to Python path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from config.api_config import APIConfig
 
 class MultiEndpointAgent:

@@ -11,6 +11,7 @@ Server responds with actual API results.
 from flask import Flask, request, jsonify
 from request_search_api_agent import RequestSearchAPIAgent
 from multi_endpoint_agent import MultiEndpointAgent
+from enhanced_multi_endpoint_agent import EnhancedMultiEndpointAgent
 from learning_system import LearningSystem
 try:
     from enhanced_multi_endpoint_agent import EnhancedMultiEndpointAgent
@@ -25,6 +26,9 @@ from urllib.parse import urlencode
 import sys
 import os
 from datetime import datetime
+
+# Add parent directory to Python path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Add config to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'config'))
@@ -43,14 +47,18 @@ class APIExecutor:
         self.learning_system = LearningSystem()
         print("🧠 Learning System initialized")
 
-        # Initialize enhanced agent if available
+        # Initialize ONLY Llama agent - no fallbacks
         if ENHANCED_AGENT_AVAILABLE:
-            self.llm_agent = EnhancedMultiEndpointAgent()
+            # Configure to use ONLY Llama 3.2 (faster model)
+            self.llm_agent = EnhancedMultiEndpointAgent(
+                llm_type="llama_only",  # Force Llama-only usage
+                llama_endpoint="http://localhost:11434/api/generate",
+                llama_model="llama3:8b"
+            )
             self.active_agent = self.llm_agent
-            print("🚀 Enhanced Multi-Endpoint Agent with LLM intelligence activated")
+            print("🦙 LLAMA-ONLY MODE: No fallbacks configured")
         else:
-            self.active_agent = self.multi_agent
-            print("⚠️ Using legacy multi-endpoint agent")
+            raise Exception("❌ Enhanced agent not available - Llama-only mode requires enhanced agent")
         # Use configuration
         self.config = APIConfig
 
@@ -80,32 +88,29 @@ class APIExecutor:
 
             print("🔑 Fetching new access token...")
 
-            # Prepare OAuth request
+            # Prepare OAuth request using correct endpoint and format
             headers = {
                 'Accept': '*/*',
                 'Accept-Language': 'en-GB,en;q=0.9',
-                'Authorization': self.config.CLIENT_AUTH,
+                'Authorization': 'Basic ZmxvdG8td2ViLWFwcDpjN3ByZE5KRVdFQmt4NGw3ZmV6bA==',
                 'Connection': 'keep-alive',
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'Origin': self.config.BASE_URL,
-                'Referer': f'{self.config.BASE_URL}/login?redirectFrom=%2Ft%2Frequest%2F',
+                'Origin': 'http://172.16.15.113',
+                'Referer': 'http://172.16.15.113/login?redirectFrom=%2Ft%2Frequest%2F',
                 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
             }
 
-            # Prepare form data
-            data = {
-                'username': self.config.USERNAME,
-                'password': self.config.PASSWORD,
-                'grant_type': 'password'
-            }
+            # Use URL-encoded format as shown in curl
+            data = 'username=automind%40motadata.com&password=2d7QdRn6bMI1Q2vQBhficw%3D%3D&grant_type=password'
 
-            # Make OAuth request
+            # Make OAuth request to correct endpoint
+            oauth_url = 'http://172.16.15.113/api/oauth/token'
             response = requests.post(
-                self.config.OAUTH_URL,
+                oauth_url,
                 headers=headers,
                 data=data,
                 verify=False,  # --insecure equivalent
-                timeout=self.config.REQUEST_TIMEOUT
+                timeout=30
             )
 
             if response.status_code == 200:
@@ -131,6 +136,12 @@ class APIExecutor:
         except Exception as e:
             print(f"❌ Token retrieval error: {str(e)}")
             return None
+
+    def clear_auth_cache(self):
+        """Clear authentication cache to force re-authentication"""
+        self.cached_token = None
+        self.token_expiry = None
+        print("🔄 API server authentication cache cleared")
 
     def get_status_mapping(self):
         """Get status mapping from the API with fallback"""
@@ -1020,6 +1031,25 @@ def execute_request():
             # Try enhanced agent first (if available)
             if ENHANCED_AGENT_AVAILABLE and hasattr(executor, 'llm_agent'):
                 print(f"🤖 Using Enhanced LLM-powered agent for: '{user_prompt}'")
+
+                # Check if we're in Llama-only mode
+                if hasattr(executor.active_agent, 'llama_only_mode') and executor.active_agent.llama_only_mode:
+                    print("🦙 LLAMA-ONLY MODE: Using only Llama 3:8b")
+                    try:
+                        llm_result = executor.active_agent.execute_request(user_prompt)
+                        return jsonify(llm_result)
+                    except Exception as e:
+                        # Return error response in Llama-only mode
+                        return jsonify({
+                            "success": False,
+                            "error": f"Llama 3:8b failed: {str(e)}",
+                            "error_type": "llama_failure",
+                            "user_prompt": user_prompt,
+                            "timestamp": __import__('datetime').datetime.now().isoformat(),
+                            "message": "🦙 LLAMA-ONLY MODE: No fallback agents available"
+                        }), 500
+
+                # Regular mode with fallbacks
                 llm_result = executor.active_agent.execute_request(user_prompt)
 
                 # Check if enhanced agent succeeded
@@ -1028,7 +1058,7 @@ def execute_request():
                 else:
                     print(f"⚠️ Enhanced agent failed, falling back to legacy agent")
 
-            # Fall back to multi-endpoint agent
+            # Fall back to multi-endpoint agent (only if not Llama-only mode)
             print(f"🔄 Using legacy multi-endpoint agent for: '{user_prompt}'")
             multi_result = executor.multi_agent.execute_query(user_prompt)
 
@@ -1229,6 +1259,23 @@ def clear_learning_data():
         return jsonify({
             "success": True,
             "message": "All learning data cleared",
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+@app.route('/auth/clear', methods=['POST'])
+def clear_auth_cache():
+    """Clear authentication cache to force token refresh"""
+    try:
+        executor.clear_auth_cache()
+        return jsonify({
+            "success": True,
+            "message": "Authentication cache cleared - next request will fetch new token",
             "timestamp": datetime.now().isoformat()
         })
     except Exception as e:
