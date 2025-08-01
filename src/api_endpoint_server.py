@@ -11,6 +11,12 @@ Server responds with actual API results.
 from flask import Flask, request, jsonify
 from request_search_api_agent import RequestSearchAPIAgent
 from multi_endpoint_agent import MultiEndpointAgent
+try:
+    from enhanced_multi_endpoint_agent import EnhancedMultiEndpointAgent
+    ENHANCED_AGENT_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Enhanced agent not available: {e}")
+    ENHANCED_AGENT_AVAILABLE = False
 import requests
 import json
 import re
@@ -31,6 +37,15 @@ class APIExecutor:
     def __init__(self):
         self.agent = RequestSearchAPIAgent("APIExecutor")
         self.multi_agent = MultiEndpointAgent()
+
+        # Initialize enhanced agent if available
+        if ENHANCED_AGENT_AVAILABLE:
+            self.llm_agent = EnhancedMultiEndpointAgent()
+            self.active_agent = self.llm_agent
+            print("🚀 Enhanced Multi-Endpoint Agent with LLM intelligence activated")
+        else:
+            self.active_agent = self.multi_agent
+            print("⚠️ Using legacy multi-endpoint agent")
         # Use configuration
         self.config = APIConfig
 
@@ -885,9 +900,21 @@ def execute_request():
 
         user_prompt = data['request']
 
-        # Execute using multi-endpoint agent with fallback to original agent
+        # Execute using intelligent agent with fallback to legacy agents
         try:
-            # Try multi-endpoint agent first
+            # Try enhanced agent first (if available)
+            if ENHANCED_AGENT_AVAILABLE and hasattr(executor, 'llm_agent'):
+                print(f"🤖 Using Enhanced LLM-powered agent for: '{user_prompt}'")
+                llm_result = executor.active_agent.execute_request(user_prompt)
+
+                # Check if enhanced agent succeeded
+                if llm_result.get('success', False):
+                    return jsonify(llm_result)
+                else:
+                    print(f"⚠️ Enhanced agent failed, falling back to legacy agent")
+
+            # Fall back to multi-endpoint agent
+            print(f"🔄 Using legacy multi-endpoint agent for: '{user_prompt}'")
             multi_result = executor.multi_agent.execute_query(user_prompt)
 
             # Check if qualification was generated successfully
