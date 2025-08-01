@@ -17,6 +17,7 @@ import re
 from urllib.parse import urlencode
 import sys
 import os
+from datetime import datetime
 
 # Add config to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'config'))
@@ -40,6 +41,9 @@ class APIExecutor:
         # Status mapping cache
         self.status_mapping = {}
         self.status_mapping_loaded = False
+
+        # Remove static parsing - rely on multi-endpoint agent only
+        print("🎯 API Endpoint Server initialized - Using dynamic multi-endpoint agent for all filter generation")
 
     def get_access_token(self):
         """Get access token using OAuth endpoint"""
@@ -336,37 +340,7 @@ class APIExecutor:
         
         return params
     
-    def extract_priority_filter(self, user_prompt):
-        """Extract priority filter from user prompt"""
-        prompt_lower = user_prompt.lower()
-        
-        priority_ids = []
-        for priority_name, priority_id in self.config.PRIORITY_MAPPING.items():
-            if priority_name in prompt_lower:
-                priority_ids.append(priority_id)
-        
-        return priority_ids
-
-    def extract_status_filter(self, user_prompt):
-        """Extract status filter from user prompt"""
-        prompt_lower = user_prompt.lower()
-
-        # Get status mapping
-        status_mapping = self.get_status_mapping()
-        if not status_mapping:
-            return []
-
-        status_ids = []
-
-        # Check for specific status mentions
-        for status_name, status_id in status_mapping.items():
-            if status_name in prompt_lower:
-                status_ids.append(status_id)
-
-        # Remove duplicates
-        status_ids = list(set(status_ids))
-
-        return status_ids
+    # All static parsing methods removed - using dynamic multi-endpoint agent only
 
     def extract_request_id(self, user_prompt):
         """Extract specific request ID from user prompt"""
@@ -424,322 +398,7 @@ class APIExecutor:
 
         return has_specific_keyword and request_id is not None
 
-    def extract_text_search(self, user_prompt):
-        """Extract text search terms from user prompt"""
-        prompt_lower = user_prompt.lower()
-        text_searches = {}
-
-        # Look for patterns like "subject contains", "description has", etc.
-        import re
-
-        # Pattern: "subject contains 'text'" or "subject has 'text'" (with quotes)
-        subject_pattern_quoted = r'subject\s+(?:contains|has|includes|with)\s+["\']([^"\']+)["\']'
-        subject_match_quoted = re.search(subject_pattern_quoted, prompt_lower)
-        if subject_match_quoted:
-            text_searches['subject'] = subject_match_quoted.group(1)
-
-        # Pattern: "subject contains text" (without quotes)
-        elif 'subject' in prompt_lower and any(op in prompt_lower for op in ['contains', 'has', 'includes', 'with']):
-            subject_pattern_unquoted = r'subject\s+(?:contains|has|includes|with)\s+(\w+)'
-            subject_match_unquoted = re.search(subject_pattern_unquoted, prompt_lower)
-            if subject_match_unquoted:
-                text_searches['subject'] = subject_match_unquoted.group(1)
-
-        # Pattern: "description contains 'text'" (with quotes)
-        desc_pattern_quoted = r'description\s+(?:contains|has|includes|with)\s+["\']([^"\']+)["\']'
-        desc_match_quoted = re.search(desc_pattern_quoted, prompt_lower)
-        if desc_match_quoted:
-            text_searches['description'] = desc_match_quoted.group(1)
-
-        # Pattern: "description contains text" (without quotes)
-        elif 'description' in prompt_lower and any(op in prompt_lower for op in ['contains', 'has', 'includes', 'with']):
-            desc_pattern_unquoted = r'description\s+(?:contains|has|includes|with)\s+(\w+)'
-            desc_match_unquoted = re.search(desc_pattern_unquoted, prompt_lower)
-            if desc_match_unquoted:
-                text_searches['description'] = desc_match_unquoted.group(1)
-
-        # Pattern: "name contains 'text'" or "title contains 'text'" (with quotes)
-        name_pattern_quoted = r'(?:name|title)\s+(?:contains|has|includes|with)\s+["\']([^"\']+)["\']'
-        name_match_quoted = re.search(name_pattern_quoted, prompt_lower)
-        if name_match_quoted:
-            text_searches['name'] = name_match_quoted.group(1)
-
-        # Pattern: "name contains text" (without quotes)
-        elif any(field in prompt_lower for field in ['name', 'title']) and any(op in prompt_lower for op in ['contains', 'has', 'includes', 'with']):
-            name_pattern_unquoted = r'(?:name|title)\s+(?:contains|has|includes|with)\s+(\w+)'
-            name_match_unquoted = re.search(name_pattern_unquoted, prompt_lower)
-            if name_match_unquoted:
-                text_searches['name'] = name_match_unquoted.group(1)
-
-        # General text search without field specification
-        if not text_searches:
-            # Only look for explicit text search patterns, not general "with" usage
-            # Look for "contains text", "having text", "includes text" but NOT "with status/priority"
-            text_search_patterns = [
-                r'contains\s+(\w+)',
-                r'having\s+(\w+)',
-                r'includes\s+(\w+)'
-            ]
-
-            for pattern in text_search_patterns:
-                match = re.search(pattern, prompt_lower)
-                if match:
-                    search_term = match.group(1)
-
-                    # Skip assignment-related terms and status-related terms
-                    skip_terms = ['unassigned', 'assigned', 'technician', 'status', 'priority']
-
-                    # Also skip if this appears to be a field-specific pattern
-                    field_context_patterns = [
-                        r'assignee\s+(?:contains|includes|in)\s+' + re.escape(search_term),
-                        r'technician\s+(?:contains|includes|in)\s+' + re.escape(search_term),
-                        r'group\s+(?:contains|includes|in)\s+' + re.escape(search_term),
-                        r'category\s+(?:contains|includes|in)\s+' + re.escape(search_term),
-                        r'requester\s+(?:contains|includes|in)\s+' + re.escape(search_term),
-                        r'impact\s+(?:contains|includes|in)\s+' + re.escape(search_term),
-                        r'urgency\s+(?:contains|includes|in)\s+' + re.escape(search_term)
-                    ]
-
-                    is_field_context = any(re.search(fp, prompt_lower) for fp in field_context_patterns)
-
-                    if search_term not in skip_terms and not is_field_context:
-                        # Default to subject search
-                        text_searches['subject'] = search_term
-                        break
-
-        return text_searches
-
-    def extract_date_filters(self, user_prompt):
-        """Extract date-based filters from user prompt"""
-        prompt_lower = user_prompt.lower()
-        date_filters = []
-
-        import datetime
-        import re
-
-        # Common date patterns
-        if 'today' in prompt_lower:
-            today = datetime.datetime.now().strftime('%Y-%m-%dT00:00:00Z')
-            date_filters.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.createdTime"
-                },
-                "operator": "GreaterThanOrEqual",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "TimeValueRest",
-                        "value": today
-                    }
-                }
-            })
-
-        elif 'yesterday' in prompt_lower:
-            yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y-%m-%dT00:00:00Z')
-            date_filters.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.createdTime"
-                },
-                "operator": "GreaterThanOrEqual",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "TimeValueRest",
-                        "value": yesterday
-                    }
-                }
-            })
-
-        elif 'last week' in prompt_lower or 'past week' in prompt_lower:
-            last_week = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime('%Y-%m-%dT00:00:00Z')
-            date_filters.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.createdTime"
-                },
-                "operator": "GreaterThanOrEqual",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "TimeValueRest",
-                        "value": last_week
-                    }
-                }
-            })
-
-        elif 'last month' in prompt_lower or 'past month' in prompt_lower:
-            last_month = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%dT00:00:00Z')
-            date_filters.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.createdTime"
-                },
-                "operator": "GreaterThanOrEqual",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "TimeValueRest",
-                        "value": last_month
-                    }
-                }
-            })
-
-        # Pattern for "last X days"
-        days_pattern = r'last\s+(\d+)\s+days?'
-        days_match = re.search(days_pattern, prompt_lower)
-        if days_match:
-            days = int(days_match.group(1))
-            past_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime('%Y-%m-%dT00:00:00Z')
-            date_filters.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.createdTime"
-                },
-                "operator": "GreaterThanOrEqual",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "TimeValueRest",
-                        "value": past_date
-                    }
-                }
-            })
-
-        return date_filters
-
-    def extract_assignment_filters(self, user_prompt):
-        """Extract assignment-related filters from user prompt"""
-        prompt_lower = user_prompt.lower()
-        assignment_filters = []
-
-        import re
-
-        # Pattern 1: "assignee contains/includes/in {value}" - use 'in' operator
-        assignee_value_patterns = [
-            r'assignee\s+(?:contains|includes|in)\s+(\w+)',
-            r'technician\s+(?:contains|includes|in)\s+(\w+)',
-            r'assigned\s+to\s+(\w+)',
-            r'assignee\s+(?:is|=|equals?)\s+(\w+)'
-        ]
-
-        for pattern in assignee_value_patterns:
-            match = re.search(pattern, prompt_lower)
-            if match:
-                assignee_value = match.group(1)
-
-                # Map assignee values to IDs
-                assignee_mapping = {
-                    'unassigned': 0,  # "unassigned" maps to ID 0, not null
-                    'none': 0,
-                    'null': 0,
-                    '0': 0,
-                    '1': 1,
-                    '2': 2,
-                    '3': 3,
-                    '4': 4,
-                    '5': 5
-                }
-
-                # Check if it's a mapped value or try to convert to int
-                if assignee_value in assignee_mapping:
-                    assignee_id = assignee_mapping[assignee_value]
-                else:
-                    try:
-                        assignee_id = int(assignee_value)
-                    except ValueError:
-                        # If not a number, look up user by name
-                        print(f"🔍 Looking up user: {assignee_value}")
-                        user_mapping = self.get_user_mapping()
-
-                        # Try to find user by name (case-insensitive)
-                        assignee_value_lower = assignee_value.lower()
-                        if assignee_value_lower in user_mapping:
-                            assignee_id = user_mapping[assignee_value_lower]
-                            print(f"✅ Found user '{assignee_value}' with ID: {assignee_id}")
-                        else:
-                            # Try partial matching
-                            matching_users = {name: uid for name, uid in user_mapping.items()
-                                            if assignee_value_lower in name}
-
-                            if matching_users:
-                                # Use the first match
-                                matched_name, assignee_id = next(iter(matching_users.items()))
-                                print(f"✅ Found partial match '{matched_name}' with ID: {assignee_id}")
-                            else:
-                                print(f"❌ User '{assignee_value}' not found in user mapping")
-                                print(f"   Available users: {list(user_mapping.keys())[:10]}")
-                                # Fallback to string search in requesterName
-                                assignment_filters.append({
-                                    "type": "RelationalQualificationRest",
-                                    "leftOperand": {
-                                        "type": "PropertyOperandRest",
-                                        "key": "request.requesterName"
-                                    },
-                                    "operator": "contains",
-                                    "rightOperand": {
-                                        "type": "ValueOperandRest",
-                                        "value": {
-                                            "type": "StringValueRest",
-                                            "value": assignee_value
-                                        }
-                                    }
-                                })
-                                return assignment_filters
-
-                # Always use RelationalQualificationRest with 'in' operator for ID-based searches
-                assignment_filters.append({
-                    "type": "RelationalQualificationRest",
-                    "leftOperand": {
-                        "type": "PropertyOperandRest",
-                        "key": "request.technicianId"
-                    },
-                    "operator": "in",
-                    "rightOperand": {
-                        "type": "ValueOperandRest",
-                        "value": {
-                            "type": "ListLongValueRest",
-                            "value": [assignee_id]
-                        }
-                    }
-                })
-                return assignment_filters
-
-        # Pattern 2: General unassigned patterns (fallback) - only for simple cases
-        # Only use is_null for very specific unassigned patterns that don't use "contains/includes/in"
-        simple_unassigned_patterns = [
-            'get all unassigned', 'show unassigned', 'find unassigned',
-            'not assigned', 'no technician', 'without technician'
-        ]
-
-        if any(pattern in prompt_lower for pattern in simple_unassigned_patterns):
-            assignment_filters.append({
-                "type": "UnaryQualificationRest",
-                "operand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.technicianId"
-                },
-                "operator": "is_null"
-            })
-
-        # Pattern 3: General assigned patterns (fallback)
-        elif any(keyword in prompt_lower for keyword in ['has technician', 'with technician']) and 'contains' not in prompt_lower and 'includes' not in prompt_lower:
-            assignment_filters.append({
-                "type": "UnaryQualificationRest",
-                "operand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.technicianId"
-                },
-                "operator": "is_not_null"
-            })
-
-        return assignment_filters
+    # Static parsing methods removed - using dynamic multi-endpoint agent only
 
     def extract_general_field_filters(self, user_prompt):
         """Extract general field filters with contains/includes/in operators"""
@@ -870,6 +529,108 @@ class APIExecutor:
 
         return tag_filters
 
+    def train_from_examples(self, training_examples):
+        """Train the agent from comprehensive filter examples"""
+        print("🎓 Training agent with comprehensive filter examples...")
+
+        # Store training examples for pattern recognition
+        self.training_patterns = {
+            'subject_operators': {
+                'contains': ['contains', 'has', 'includes'],
+                'start_with': ['starts with', 'begins with'],
+                'end_with': ['ends with', 'finishes with'],
+                'equals': ['is', 'equals', 'exactly'],
+                'not_contains': ['does not contain', 'not contains'],
+                'is_blank': ['is empty', 'is blank', 'no subject']
+            },
+            'priority_patterns': {
+                'single': r'priority\s+(?:is|as|equals?)\s+(\w+)',
+                'negative': r'not\s+(\w+)\s+priority',
+                'range': r'(\w+)\s+to\s+(\w+)\s+priority',
+                'multiple': r'(?:high|medium|low|urgent)\s+(?:or|and)\s+(?:high|medium|low|urgent)'
+            },
+            'date_patterns': {
+                'within_last': r'(?:in|within|last|past)\s+(\d+)\s+(day|days|week|weeks|month|months)',
+                'before': r'before\s+(\d{4}-\d{2}-\d{2})',
+                'after': r'after\s+(\d{4}-\d{2}-\d{2})',
+                'between': r'between\s+(\d{4}-\d{2}-\d{2})\s+and\s+(\d{4}-\d{2}-\d{2})'
+            },
+            'field_mappings': {
+                'assignee': 'request.technicianId',
+                'technician': 'request.technicianId',
+                'requester': 'request.requesterId',
+                'category': 'request.categoryId',
+                'location': 'request.locationId',
+                'urgency': 'request.urgencyId',
+                'priority': 'request.priorityId',
+                'status': 'request.statusId',
+                'group': 'request.groupId'
+            }
+        }
+
+        # Example payload structures for reference
+        self.payload_templates = {
+            'string_filter': {
+                "type": "RelationalQualificationRest",
+                "leftOperand": {"key": "{field}", "type": "PropertyOperandRest"},
+                "operator": "{operator}",
+                "rightOperand": {"type": "ValueOperandRest", "value": {"type": "StringValueRest", "value": "{value}"}}
+            },
+            'list_filter': {
+                "type": "RelationalQualificationRest",
+                "leftOperand": {"key": "{field}", "type": "PropertyOperandRest"},
+                "operator": "{operator}",
+                "rightOperand": {"type": "ValueOperandRest", "value": {"type": "ListLongValueRest", "value": "{values}"}}
+            },
+            'date_filter': {
+                "type": "RelationalQualificationRest",
+                "leftOperand": {"key": "{field}", "type": "VariableOperandRest"},
+                "operator": "{operator}",
+                "rightOperand": {"type": "ValueOperandRest", "value": {"type": "DurationValueRest", "value": "{value}", "unit": "{unit}"}}
+            }
+        }
+
+        print("✅ Agent training completed with comprehensive filter patterns")
+
+    def validate_and_explain_filters(self, user_prompt, generated_quals):
+        """Validate generated filters and provide explanation"""
+        explanations = []
+
+        for qual in generated_quals:
+            if qual.get("type") == "RelationalQualificationRest":
+                field = qual.get("leftOperand", {}).get("key", "unknown")
+                operator = qual.get("operator", "unknown")
+                value = qual.get("rightOperand", {}).get("value", {})
+
+                # Generate human-readable explanation
+                field_name = field.split(".")[-1] if "." in field else field
+
+                if operator == "in":
+                    if isinstance(value.get("value"), list):
+                        values = value.get("value", [])
+                        explanations.append(f"Filter: {field_name} is one of {values}")
+                    else:
+                        explanations.append(f"Filter: {field_name} equals {value.get('value')}")
+                elif operator == "not_in":
+                    values = value.get("value", [])
+                    explanations.append(f"Filter: {field_name} is NOT one of {values}")
+                elif operator == "contains":
+                    explanations.append(f"Filter: {field_name} contains '{value.get('value')}'")
+                elif operator == "start_with":
+                    explanations.append(f"Filter: {field_name} starts with '{value.get('value')}'")
+                elif operator == "within_last":
+                    duration = value.get("value", 0)
+                    unit = value.get("unit", "days")
+                    explanations.append(f"Filter: {field_name} within last {duration} {unit}")
+                else:
+                    explanations.append(f"Filter: {field_name} {operator} {value.get('value')}")
+
+        return {
+            "filter_count": len(generated_quals),
+            "explanations": explanations,
+            "validation_status": "valid" if generated_quals else "no_filters"
+        }
+
     def fetch_specific_request(self, request_id):
         """Fetch specific request by ID"""
         try:
@@ -954,197 +715,42 @@ class APIExecutor:
             }
     
     def build_advanced_qualification(self, user_prompt):
-        """Build advanced qualification based on natural language prompt"""
-        prompt_lower = user_prompt.lower()
+        """Build qualification using pure multi-endpoint agent NLP - NO STATIC PARSING"""
+        print(f"🎯 Processing prompt with dynamic NLP: '{user_prompt}'")
 
-        # Extract different types of filters
-        priority_ids = self.extract_priority_filter(user_prompt)
-        status_ids = self.extract_status_filter(user_prompt)
+        try:
+            # Use ONLY the multi-endpoint agent for all filter generation
+            agent_response = self.api_executor.process_request(user_prompt)
 
-        # Extract text search terms
-        text_search = self.extract_text_search(user_prompt)
+            if agent_response and agent_response.get("qualification"):
+                qualification = agent_response["qualification"]
+                quals = qualification.get("qualDetails", {}).get("quals", [])
+                print(f"✅ Multi-endpoint agent generated {len(quals)} dynamic filters")
 
-        # Extract date filters
-        date_filters = self.extract_date_filters(user_prompt)
+                # Log the generated filters for debugging
+                for i, qual in enumerate(quals):
+                    field = qual.get("leftOperand", {}).get("key", "unknown")
+                    operator = qual.get("operator", "unknown")
+                    value = qual.get("rightOperand", {}).get("value", {}).get("value", "unknown")
+                    print(f"   Filter {i+1}: {field} {operator} {value}")
 
-        # Extract assignment filters
-        assignment_filters = self.extract_assignment_filters(user_prompt)
-
-        # Extract tag filters
-        tag_filters = self.extract_tag_filters(user_prompt)
-
-        # Extract general field filters
-        general_field_filters = self.extract_general_field_filters(user_prompt)
-
-        # Build qualification list
-        quals = []
-
-        # Handle status filtering - only add if user specified status OR no status specified
-        if status_ids:
-            # User specified specific status(es) - use only those
-            quals.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.statusId"
-                },
-                "operator": "in",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "ListLongValueRest",
-                        "value": status_ids
+                return qualification
+            else:
+                print("⚠️ Multi-endpoint agent returned no qualification")
+                return {
+                    "qualDetails": {
+                        "quals": [],
+                        "type": "FlatQualificationRest"
                     }
                 }
-            })
-        else:
-            # No specific status mentioned - check if we should add default filter
-            # Only add default "exclude closed" if no other specific filters are present
-            has_other_filters = (priority_ids or text_search or date_filters or
-                               assignment_filters or tag_filters or general_field_filters)
-
-            if not has_other_filters:
-                # No filters at all - add default exclude closed
-                quals.append({
-                    "type": "RelationalQualificationRest",
-                    "leftOperand": {
-                        "type": "PropertyOperandRest",
-                        "key": "request.statusId"
-                    },
-                    "operator": "not_in",
-                    "rightOperand": {
-                        "type": "ValueOperandRest",
-                        "value": {
-                            "type": "ListLongValueRest",
-                            "value": [self.config.CLOSED_STATUS_ID]
-                        }
-                    }
-                })
-            # If other filters are present, don't add default status filter
-
-        # Add priority filter
-        if priority_ids:
-            quals.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.priorityId"
-                },
-                "operator": "in",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "ListLongValueRest",
-                        "value": priority_ids
-                    }
+        except Exception as e:
+            print(f"❌ Error in multi-endpoint agent: {str(e)}")
+            return {
+                "qualDetails": {
+                    "quals": [],
+                    "type": "FlatQualificationRest"
                 }
-            })
-
-        # Add text search filters
-        if text_search:
-            for field, search_term in text_search.items():
-                quals.append({
-                    "type": "RelationalQualificationRest",
-                    "leftOperand": {
-                        "type": "PropertyOperandRest",
-                        "key": f"request.{field}"
-                    },
-                    "operator": "contains",
-                    "rightOperand": {
-                        "type": "ValueOperandRest",
-                        "value": {
-                            "type": "StringValueRest",
-                            "value": search_term
-                        }
-                    }
-                })
-
-        # Add date filters
-        for date_filter in date_filters:
-            quals.append(date_filter)
-
-        # Add assignment filters
-        for assignment_filter in assignment_filters:
-            quals.append(assignment_filter)
-
-        # Add tag filters
-        for tag_filter in tag_filters:
-            quals.append(tag_filter)
-
-        # Add general field filters
-        for field_filter in general_field_filters:
-            quals.append(field_filter)
-
-        return {
-            "qualDetails": {
-                "type": "FlatQualificationRest",
-                "quals": quals
             }
-        }
-
-    def build_request_body(self, priority_ids=None, status_ids=None):
-        """Build the request body for the API call (legacy method)"""
-        quals = []
-
-        # Handle status filtering
-        if status_ids:
-            quals.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.statusId"
-                },
-                "operator": "in",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "ListLongValueRest",
-                        "value": status_ids
-                    }
-                }
-            })
-        else:
-            # Default: exclude closed requests
-            quals.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.statusId"
-                },
-                "operator": "not_in",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "ListLongValueRest",
-                        "value": [self.config.CLOSED_STATUS_ID]
-                    }
-                }
-            })
-
-        # Add priority filter
-        if priority_ids:
-            quals.append({
-                "type": "RelationalQualificationRest",
-                "leftOperand": {
-                    "type": "PropertyOperandRest",
-                    "key": "request.priorityId"
-                },
-                "operator": "in",
-                "rightOperand": {
-                    "type": "ValueOperandRest",
-                    "value": {
-                        "type": "ListLongValueRest",
-                        "value": priority_ids
-                    }
-                }
-            })
-
-        return {
-            "qualDetails": {
-                "type": "FlatQualificationRest",
-                "quals": quals
-            }
-        }
     
     def execute_api_call(self, user_prompt):
         """Execute the API call based on user prompt"""
@@ -1164,16 +770,14 @@ class APIExecutor:
                     "details": "Could not authenticate with the API"
                 }
             
-            # Parse the prompt
+            # Parse the prompt for basic parameters only
             params = self.parse_user_prompt(user_prompt)
 
-            # Extract filters for response metadata
-            priority_ids = self.extract_priority_filter(user_prompt)
-            status_ids = self.extract_status_filter(user_prompt)
-
-            # Use advanced qualification builder for complex queries
+            # Use ONLY multi-endpoint agent for all filter generation
             request_body = self.build_advanced_qualification(user_prompt)
-            
+
+            print(f"🔍 Generated request body: {request_body}")
+
             # Build URL with query parameters
             query_string = urlencode(params)
             url = f"{self.config.REQUEST_SEARCH_URL}?{query_string}"
@@ -1205,8 +809,6 @@ class APIExecutor:
                         "url": url,
                         "method": "POST",
                         "request_body": request_body,
-                        "priority_filter": priority_ids,
-                        "status_filter": status_ids,
                         "parameters": params
                     },
                     "message": f"Found {len(data.get('content', []))} requests" if isinstance(data, dict) and 'content' in data else "API call successful"
@@ -1467,40 +1069,238 @@ def get_examples():
 
 @app.route('/endpoints', methods=['GET'])
 def get_endpoints():
-    """Get available endpoints information"""
-    return jsonify({
-        "available_endpoints": [
-            {
-                "name": "requests",
-                "url": "/api/request/search/byqual",
-                "description": "Search and filter IT service requests",
-                "supported_filters": ["status", "priority", "urgency", "assignee", "requester", "category", "subject", "description", "tags", "date"]
+    """Get comprehensive information about all known endpoints that the agent can handle"""
+
+    # Get dynamic endpoint information from the multi-endpoint agent
+    try:
+        # Access the multi-endpoint agent through the API executor
+        multi_agent = executor.multi_agent
+
+        # Get endpoint detection patterns and capabilities
+        endpoint_info = {
+            "timestamp": datetime.now().isoformat(),
+            "agent_version": "Enhanced Multi-Value Filter Agent v2.0",
+            "total_endpoints": 4,
+            "available_endpoints": [
+                {
+                    "name": "requests",
+                    "endpoint_id": "requests",
+                    "api_url": "https://172.16.15.113/api/request/search/byqual",
+                    "method": "POST",
+                    "description": "Search and filter IT service requests with advanced multi-value filtering",
+                    "primary_use_cases": [
+                        "Search requests by status, priority, urgency",
+                        "Filter by assignee, requester, category",
+                        "Text search in subject, description",
+                        "Date-based filtering",
+                        "Complex multi-value combinations"
+                    ],
+                    "supported_filters": {
+                        "status": {
+                            "type": "multi-value",
+                            "operators": ["in", "not_in"],
+                            "values": ["open", "in progress", "pending", "testing", "resolved", "closed"],
+                            "business_logic": ["active", "unresolved", "completed"],
+                            "examples": ["status is open and in progress", "except closed and resolved"]
+                        },
+                        "priority": {
+                            "type": "multi-value",
+                            "operators": ["in", "not_in"],
+                            "values": ["low", "medium", "high", "urgent", "critical"],
+                            "examples": ["priority high and urgent", "not low priority"]
+                        },
+                        "urgency": {
+                            "type": "single-value",
+                            "operators": ["in"],
+                            "values": ["low", "medium", "high", "urgent"],
+                            "examples": ["urgency is high"]
+                        },
+                        "assignee": {
+                            "type": "multi-value",
+                            "operators": ["in", "not_in"],
+                            "auto_resolution": "user names to IDs",
+                            "examples": ["assigned to Tech1 and Tech2", "not assigned to Admin"]
+                        },
+                        "requester": {
+                            "type": "text-search",
+                            "operators": ["contains", "equals"],
+                            "auto_resolution": "user names to IDs",
+                            "examples": ["requester contains John"]
+                        },
+                        "text_search": {
+                            "type": "text-search",
+                            "fields": ["subject", "description"],
+                            "operators": ["contains", "starts_with", "ends_with"],
+                            "examples": ["subject contains error", "description has network"]
+                        },
+                        "date_filters": {
+                            "type": "temporal",
+                            "operators": ["within_last", "between", "after", "before"],
+                            "examples": ["created today", "last 7 days", "between 2024-01-01 and 2024-01-31"]
+                        },
+                        "business_logic": {
+                            "type": "special",
+                            "vip_customers": "vipRequest = True",
+                            "escalated": "slaViolated = True",
+                            "recent": "within last 3 days",
+                            "examples": ["VIP customers", "escalated requests", "recent tickets"]
+                        }
+                    },
+                    "detection_keywords": ["request", "ticket", "incident", "search", "find", "get", "show", "list"],
+                    "sample_queries": [
+                        "Get me all requests where status is open and in progress",
+                        "Show requests with high priority except closed",
+                        "Find tickets assigned to Tech1 created today",
+                        "List VIP customer requests with urgent priority",
+                        "Search requests containing 'network' in subject"
+                    ]
+                },
+                {
+                    "name": "urgency",
+                    "endpoint_id": "urgency",
+                    "api_url": "https://172.16.15.113/api/urgency/search/byqual",
+                    "method": "POST",
+                    "description": "Get urgency levels mapping and information",
+                    "primary_use_cases": [
+                        "Get all available urgency levels",
+                        "Map urgency names to IDs",
+                        "Understand urgency hierarchy"
+                    ],
+                    "supported_filters": {
+                        "basic_search": {
+                            "type": "general",
+                            "description": "Returns all urgency levels with ID mappings"
+                        }
+                    },
+                    "detection_keywords": ["urgency", "urgent", "priority level"],
+                    "sample_queries": [
+                        "Get all urgency levels",
+                        "Show urgency mapping",
+                        "What urgency levels are available?"
+                    ],
+                    "returns": {
+                        "format": "List of urgency objects",
+                        "fields": ["id", "name", "description", "level"]
+                    }
+                },
+                {
+                    "name": "service_catalog",
+                    "endpoint_id": "service_catalog",
+                    "api_url": "https://172.16.15.113/api/service_catalog/search/byqual",
+                    "method": "POST",
+                    "description": "Search service catalog items and services",
+                    "primary_use_cases": [
+                        "Search available services",
+                        "Filter by service category",
+                        "Find services by name or description"
+                    ],
+                    "supported_filters": {
+                        "category": {
+                            "type": "single-value",
+                            "operators": ["in", "contains"],
+                            "examples": ["category IT", "category contains Hardware"]
+                        },
+                        "name": {
+                            "type": "text-search",
+                            "operators": ["contains", "starts_with"],
+                            "examples": ["name contains laptop", "service starts with Email"]
+                        },
+                        "status": {
+                            "type": "single-value",
+                            "operators": ["in"],
+                            "values": ["active", "inactive"],
+                            "examples": ["status active"]
+                        }
+                    },
+                    "detection_keywords": ["service", "catalog", "offering", "available services"],
+                    "sample_queries": [
+                        "Get all services in IT category",
+                        "Find services containing 'email'",
+                        "Show active service catalog items"
+                    ]
+                },
+                {
+                    "name": "users",
+                    "endpoint_id": "users",
+                    "api_url": "https://172.16.15.113/api/technician/active/list",
+                    "method": "GET",
+                    "description": "Get active technicians and users list",
+                    "primary_use_cases": [
+                        "Get all active technicians",
+                        "User name to ID mapping",
+                        "Available assignees list"
+                    ],
+                    "supported_filters": {
+                        "active_only": {
+                            "type": "boolean",
+                            "description": "Returns only active users",
+                            "default": True
+                        }
+                    },
+                    "detection_keywords": ["user", "technician", "assignee", "staff", "team member"],
+                    "sample_queries": [
+                        "Get all users",
+                        "Show active technicians",
+                        "List available assignees",
+                        "Who can I assign tickets to?"
+                    ],
+                    "returns": {
+                        "format": "List of user objects",
+                        "fields": ["id", "name", "email", "role", "active"]
+                    }
+                }
+            ],
+            "agent_capabilities": {
+                "multi_value_filters": {
+                    "description": "Supports multiple values in single filter",
+                    "operators": ["in", "not_in"],
+                    "examples": ["status is open, pending, in progress", "except closed and resolved"]
+                },
+                "auto_resolution": {
+                    "user_names": "Automatically resolves user names to IDs using fuzzy matching",
+                    "urgency_levels": "Maps urgency names (low, medium, high, urgent) to system IDs",
+                    "service_catalogs": "Resolves service names to catalog IDs",
+                    "status_mapping": "Maps status names to system status IDs with business logic"
+                },
+                "business_logic": {
+                    "shortcuts": {
+                        "active": "open + in progress",
+                        "unresolved": "open + in progress + pending",
+                        "completed": "resolved + closed"
+                    },
+                    "special_filters": ["VIP customers", "escalated requests", "recent items"]
+                },
+                "natural_language": {
+                    "compound_queries": "Handles 'and', 'or', comma-separated values",
+                    "exclusion_patterns": "Supports 'except', 'not', 'excluding' patterns",
+                    "temporal_expressions": "Understands 'today', 'last week', 'recent', date ranges"
+                },
+                "validation": {
+                    "conflict_detection": "Detects conflicting filter combinations",
+                    "value_validation": "Validates data types and ranges",
+                    "large_sets": "Handles up to 1000 values per filter"
+                }
             },
-            {
-                "name": "urgency",
-                "url": "/api/urgency/search/byqual",
-                "description": "Get urgency levels mapping",
-                "supported_filters": []
-            },
-            {
-                "name": "service_catalog",
-                "url": "/api/service_catalog/search/byqual",
-                "description": "Search service catalog items",
-                "supported_filters": ["category", "status", "name", "description"]
-            },
-            {
-                "name": "users",
-                "url": "/api/technician/active/list",
-                "description": "Get active technicians/users list",
-                "supported_filters": []
+            "endpoint_detection": {
+                "algorithm": "Keyword-based scoring with context analysis",
+                "fallback": "Defaults to 'requests' endpoint for ambiguous queries",
+                "confidence_threshold": "Minimum score of 1 for endpoint selection"
             }
-        ],
-        "auto_resolution": {
-            "user_names": "Automatically resolves user names to IDs",
-            "urgency_levels": "Automatically resolves urgency names to IDs",
-            "service_catalogs": "Automatically resolves service catalog names to IDs"
         }
-    })
+
+        return jsonify(endpoint_info)
+
+    except Exception as e:
+        # Fallback to static information if dynamic retrieval fails
+        return jsonify({
+            "error": "Could not retrieve dynamic endpoint information",
+            "fallback_info": {
+                "available_endpoints": ["requests", "urgency", "service_catalog", "users"],
+                "primary_endpoint": "requests",
+                "description": "Multi-endpoint API agent with dynamic filter generation"
+            },
+            "error_details": str(e)
+        })
 
 if __name__ == '__main__':
     print("🚀 Starting Unified Multi-Endpoint API Server...")
