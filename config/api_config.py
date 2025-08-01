@@ -16,6 +16,8 @@ class APIConfig:
     OAUTH_URL = f"{BASE_URL}/api/oauth/token"
     REQUEST_SEARCH_URL = f"{BASE_URL}/api/request/search/byqual"
     STATUS_SEARCH_URL = f"{BASE_URL}/api/request/status/search/byqual"
+    CATEGORY_SEARCH_URL = f"{BASE_URL}/api/request/category"
+    DEPARTMENT_SEARCH_URL = f"{BASE_URL}/api/department"
     USER_SEARCH_URL = f"{BASE_URL}/api/users/search"  # Update with correct endpoint
     TOKEN_URL = f"{BASE_URL}/api/oauth/token"  # OAuth token endpoint
 

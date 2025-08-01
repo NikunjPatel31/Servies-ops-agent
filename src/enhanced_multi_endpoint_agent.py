@@ -10,11 +10,17 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 from dynamic_llm_agent import DynamicLLMAgent
 from local_intelligence_agent import LocalIntelligenceAgent
-from config.api_config import APIConfig
 
 class EnhancedMultiEndpointAgent:
     def __init__(self, openai_api_key: str = None):
-        self.config = APIConfig()
+        # Use the same working config as demo agent
+        self.base_url = "https://172.16.15.113"
+        self.auth_token = None
+        self.username = "automind@motadata.com"
+        self.password = "2d7QdRn6bMI1Q2vQBhficw=="
+        self.client_auth = "Basic ZmxvdG8td2ViLWFwcDpjN3ByZE5KRVdFQmt4NGw3ZmV6bA=="
+
+        # Initialize intelligent agents
         self.llm_agent = DynamicLLMAgent(openai_api_key)
         self.local_agent = LocalIntelligenceAgent()
         
@@ -128,8 +134,8 @@ class EnhancedMultiEndpointAgent:
     def _fetch_priority_mapping(self) -> Dict[str, int]:
         """Fetch priority mappings from API"""
         try:
-            url = f"{self.config.base_url}/api/request/priority/search/byqual"
-            headers = self.config.get_headers()
+            url = f"{self.base_url}/api/request/priority/search/byqual"
+            headers = self._get_auth_headers()
             
             response = requests.post(url, headers=headers, json={})
             response.raise_for_status()
@@ -216,15 +222,41 @@ class EnhancedMultiEndpointAgent:
     def _fetch_category_mapping(self) -> Dict[str, int]:
         """Fetch category mappings from API"""
         try:
-            # This would be implemented based on your category API
-            # For now, return sample data
-            return {
-                'it': 5, 'hr': 7, 'facilities': 9, 
-                'finance': 11, 'security': 13
-            }
+            url = f"{self.config.base_url}/api/request/category"
+            headers = self.config.get_headers()
+
+            response = requests.get(url, headers=headers, verify=False)
+            response.raise_for_status()
+
+            data = response.json()
+            mapping = {}
+
+            # Handle different response formats
+            if isinstance(data, list):
+                categories = data
+            elif isinstance(data, dict):
+                if 'objectList' in data:
+                    categories = data['objectList']
+                elif 'content' in data:
+                    categories = data['content']
+                else:
+                    categories = [data]
+            else:
+                categories = []
+
+            for item in categories:
+                if isinstance(item, dict) and 'name' in item and 'id' in item:
+                    name = item.get('name', '').lower().strip()
+                    category_id = item.get('id')
+                    if name and category_id:
+                        mapping[name] = category_id
+
+            print(f"📂 Category mapping: {mapping}")
+            return mapping
+
         except Exception as e:
             print(f"❌ Failed to fetch category mapping: {e}")
-            return {}
+            return {'it': 5, 'hr': 7, 'facilities': 9, 'finance': 11, 'security': 13}  # Fallback
 
     def _determine_endpoint(self, user_prompt: str, filter_payload: Dict) -> str:
         """Determine the best endpoint based on request"""

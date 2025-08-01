@@ -57,6 +57,10 @@ class APIExecutor:
         self.status_mapping = {}
         self.status_mapping_loaded = False
 
+        # Category mapping cache
+        self.category_mapping = {}
+        self.category_mapping_loaded = False
+
         # Remove static parsing - rely on multi-endpoint agent only
         print("🎯 API Endpoint Server initialized - Using dynamic multi-endpoint agent for all filter generation")
 
@@ -327,7 +331,113 @@ class APIExecutor:
         except Exception as e:
             print(f"❌ User mapping error: {str(e)}")
             return {}
-    
+
+    def get_category_mapping(self):
+        """Get category mapping from the API"""
+        try:
+            # Return cached mapping if available
+            if self.category_mapping_loaded:
+                return self.category_mapping
+
+            print("📂 Fetching category mapping...")
+
+            # Get access token
+            auth_token = self.get_access_token()
+            if not auth_token:
+                print("❌ Cannot fetch category mapping - no auth token")
+                return self._get_fallback_category_mapping()
+
+            # Prepare headers
+            headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Authorization': f'Bearer {auth_token}',
+                'Connection': 'keep-alive',
+                'Content-Type': 'application/json',
+                'Origin': self.config.BASE_URL,
+                'Referer': f'{self.config.BASE_URL}/admin/category/?type=request',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+            }
+
+            # Make category API request
+            response = requests.get(
+                self.config.CATEGORY_SEARCH_URL,
+                headers=headers,
+                verify=False,
+                timeout=self.config.REQUEST_TIMEOUT
+            )
+
+            if response.status_code == 200:
+                try:
+                    response_data = response.json()
+
+                    # Handle different response formats
+                    if isinstance(response_data, list):
+                        categories = response_data
+                    elif isinstance(response_data, dict):
+                        # Check if it's a paginated response
+                        if 'objectList' in response_data:
+                            categories = response_data['objectList']
+                        elif 'content' in response_data:
+                            categories = response_data['content']
+                        else:
+                            # Assume the dict itself contains category data
+                            categories = [response_data]
+                    else:
+                        print(f"❌ Unexpected category response format: {type(response_data)}")
+                        return self._get_fallback_category_mapping()
+
+                    # Build category mapping: name -> id
+                    self.category_mapping = {}
+                    for category in categories:
+                        if not isinstance(category, dict):
+                            print(f"❌ Expected dict, got: {type(category)}")
+                            continue
+
+                        category_name = category.get('name', '').lower()
+                        category_id = category.get('id')
+
+                        if category_name and category_id:
+                            self.category_mapping[category_name] = category_id
+
+                except json.JSONDecodeError as e:
+                    print(f"❌ JSON decode error: {e}")
+                    print(f"   Response text: {response.text[:200]}...")
+                    return self._get_fallback_category_mapping()
+
+                self.category_mapping_loaded = True
+                print(f"✅ Category mapping loaded: {len(self.category_mapping)} categories")
+                print(f"   Available categories: {list(self.category_mapping.keys())}")
+
+                return self.category_mapping
+            else:
+                print(f"❌ Category API failed: {response.status_code}")
+                if response.status_code == 502:
+                    print("   Server error - using fallback category mapping")
+                return self._get_fallback_category_mapping()
+
+        except Exception as e:
+            print(f"❌ Category mapping error: {str(e)}")
+            return self._get_fallback_category_mapping()
+
+    def _get_fallback_category_mapping(self):
+        """Fallback category mapping based on common categories"""
+        print("🔄 Using fallback category mapping")
+        fallback_mapping = {
+            "hardware": 1,
+            "software": 2,
+            "network": 3,
+            "access": 4,
+            "general": 5
+        }
+
+        self.category_mapping = fallback_mapping
+        self.category_mapping_loaded = True
+        print(f"✅ Fallback category mapping loaded: {len(fallback_mapping)} categories")
+        print(f"   Available categories: {list(fallback_mapping.keys())}")
+
+        return fallback_mapping
+
     def parse_user_prompt(self, user_prompt):
         """Parse user prompt and determine API parameters"""
         prompt_lower = user_prompt.lower()

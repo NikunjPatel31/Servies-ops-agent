@@ -22,12 +22,16 @@ class MultiEndpointAgent:
         self.urgency_mapping = {}
         self.service_catalog_mapping = {}
         self.status_mapping = {}
-        
+        self.category_mapping = {}
+        self.department_mapping = {}
+
         # Mapping loaded flags
         self.user_mapping_loaded = False
         self.urgency_mapping_loaded = False
         self.service_catalog_mapping_loaded = False
         self.status_mapping_loaded = False
+        self.category_mapping_loaded = False
+        self.department_mapping_loaded = False
 
         # Train the agent with comprehensive knowledge
         self.train_from_data()
@@ -430,6 +434,566 @@ class MultiEndpointAgent:
                     print(f"✅ Resolved urgency '{match}' to ID: {urgency_mapping[match]}")
 
         return resolved_urgencies
+
+    def resolve_category_references(self, user_prompt: str) -> Dict[str, Any]:
+        """Resolve category names to IDs in the prompt"""
+        import re
+        import requests
+
+        print(f"🔍 Category analysis: '{user_prompt}'")
+
+        # Check if this is ONLY a department query (no explicit category mentioned)
+        prompt_lower = user_prompt.lower()
+
+        # Check if category is explicitly mentioned
+        category_explicitly_mentioned = bool(re.search(r'\bcategory\s+(?:is|as|equals?)', prompt_lower))
+
+        # Check if department is mentioned
+        department_patterns = [
+            r'\bdepartment\s+(?:is|equals?|as)\s+',
+            r'(?:with|having)\s+department\s+',
+            r'requests?\s+(?:with|having|where)\s+department\s+'
+        ]
+
+        department_mentioned = any(re.search(pattern, prompt_lower) for pattern in department_patterns)
+
+        # Only skip category resolution if department is mentioned BUT category is NOT explicitly mentioned
+        if department_mentioned and not category_explicitly_mentioned:
+            print("🚫 Department-only query detected - skipping category resolution")
+            return {'included': {}, 'excluded': {}, 'operator': 'in'}
+
+        # Step 1: Fetch all available categories from the system
+        category_mapping = self._fetch_dynamic_category_mapping()
+        if not category_mapping:
+            print("❌ Failed to fetch dynamic category mapping")
+            return {'included': {}, 'excluded': {}, 'operator': 'in'}
+
+        print(f"✅ Fetched {len(category_mapping)} categories from system: {list(category_mapping.keys())}")
+
+        # Step 2: Detect category-related patterns
+        category_patterns = [
+            r'category\s+(?:is|equals?)\s+([a-z\s]{2,}?)(?:\s|$|,)',
+            r'(?:with|having)\s+category\s+(?:is\s+|as\s+)?([a-z\s]{2,}?)(?:\s|$|,)',
+            r'category\s+(?:as\s+)?([a-z\s]{2,}?)(?:\s|$|,)',
+            r'(?:in|under)\s+([a-z\s]{2,}?)\s+category',
+            r'requests?\s+(?:with|having|where)\s+category\s+(?:is\s+|as\s+)?([a-z\s]{2,}?)(?:\s|$|,)',
+        ]
+
+        included_categories = {}
+
+        # Step 3: Parse explicit category mentions from patterns
+        for pattern in category_patterns:
+            matches = re.findall(pattern, prompt_lower)
+            for match in matches:
+                print(f"🎯 Found category pattern: '{match}'")
+                parsed_categories = self._parse_dynamic_category_list(match, category_mapping)
+                included_categories.update(parsed_categories)
+
+        # Step 4: Scan for direct category name mentions
+        for category_name, category_id in category_mapping.items():
+            if category_name in prompt_lower:
+                included_categories[category_name] = category_id
+                print(f"✅ Direct category match: '{category_name}' -> ID {category_id}")
+
+        # Step 4.5: Try common term mappings if no direct matches found
+        if not included_categories:
+            common_mappings = {
+                'it': 'software',  # Map IT to software category
+                'tech': 'software',
+                'technology': 'software'
+            }
+
+            for common_term, mapped_category in common_mappings.items():
+                if common_term in prompt_lower and mapped_category in category_mapping:
+                    category_id = category_mapping[mapped_category]
+                    included_categories[mapped_category] = category_id
+                    print(f"✅ Common term mapping: '{common_term}' -> '{mapped_category}' -> ID {category_id}")
+                    break
+
+        # Step 5: Return result
+        result = {
+            'included': included_categories,
+            'excluded': {},  # Categories typically don't have exclusion patterns
+            'operator': 'in'
+        }
+
+        print(f"🎯 Category resolution result: {result}")
+        return result
+
+    def _fetch_dynamic_category_mapping(self) -> Dict[str, int]:
+        """Fetch all available categories from the system dynamically"""
+        import requests
+        import json
+
+        try:
+            print("🔄 Fetching dynamic category mapping from API...")
+
+            # API endpoint for category search
+            url = "https://172.16.15.113/api/request/category"
+
+            # Get fresh access token
+            access_token = self.get_access_token()
+            if not access_token:
+                print("❌ Cannot fetch category mapping - no access token")
+                return {}
+
+            # Headers with fresh token
+            headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Authorization': f'Bearer {access_token}',
+                'Connection': 'keep-alive',
+                'Content-Type': 'application/json',
+                'Referer': 'https://172.16.15.113/admin/category/?type=request',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+            }
+
+            # Make the API call (GET request for categories)
+            response = requests.get(url, headers=headers, verify=False, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                print(f"✅ Category API response received: {response.status_code}")
+
+                # Parse the response to extract category name -> ID mapping
+                category_mapping = {}
+
+                # Handle hierarchical category structure
+                if isinstance(data, list):
+                    print(f"   📂 Found list with {len(data)} category trees")
+
+                    # Extract categories from hierarchical structure
+                    def extract_categories_recursive(category_tree):
+                        """Recursively extract categories from nested structure"""
+                        categories = []
+
+                        if isinstance(category_tree, dict) and 'node' in category_tree:
+                            # Extract the main category node
+                            node = category_tree['node']
+                            if isinstance(node, dict) and 'name' in node and 'id' in node:
+                                categories.append(node)
+
+                            # Extract child categories
+                            children = category_tree.get('childrens', [])
+                            if children:
+                                for child in children:
+                                    categories.extend(extract_categories_recursive(child))
+
+                        return categories
+
+                    # Extract all categories from the tree structure
+                    all_categories = []
+                    for tree in data:
+                        all_categories.extend(extract_categories_recursive(tree))
+
+                    print(f"   📂 Extracted {len(all_categories)} total categories from hierarchy")
+
+                    # Build category mapping
+                    for category in all_categories:
+                        if isinstance(category, dict) and 'name' in category and 'id' in category:
+                            category_id = category['id']
+                            category_name = category['name'].lower().strip()
+                            category_mapping[category_name] = category_id
+                            print(f"   📂 Mapped: '{category_name}' -> ID {category_id}")
+
+                else:
+                    print(f"❌ Unexpected response format: {type(data)}")
+                    return {}
+
+                print(f"✅ Dynamic category mapping loaded: {len(category_mapping)} categories")
+                return category_mapping
+
+            else:
+                print(f"❌ Category API call failed: {response.status_code}")
+                print(f"   Response: {response.text[:200]}...")
+                return {}
+
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Network error fetching category mapping: {str(e)}")
+            return {}
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON decode error: {str(e)}")
+            return {}
+        except Exception as e:
+            print(f"❌ Unexpected error fetching category mapping: {str(e)}")
+            return {}
+
+    def _parse_dynamic_category_list(self, category_text: str, category_mapping: Dict[str, int]) -> Dict[str, int]:
+        """Parse category list using dynamic category mapping with intelligent matching"""
+        import re
+
+        parsed_categories = {}
+
+        print(f"🔍 Parsing category text: '{category_text}' against {len(category_mapping)} available categories")
+
+        # Split by various separators
+        separators = [',', ' and ', ' or ', '&', '+', ';']
+        parts = [category_text.strip()]
+
+        for sep in separators:
+            new_parts = []
+            for part in parts:
+                new_parts.extend([p.strip() for p in part.split(sep)])
+            parts = new_parts
+
+        # Clean and resolve each part
+        for part in parts:
+            part = re.sub(r'[^\w\s]', '', part).strip()  # Remove punctuation
+            if not part or len(part) < 2:  # Skip empty or single character parts
+                continue
+
+            print(f"   🔍 Analyzing part: '{part}' (length: {len(part)})")
+
+            # Try exact match first (case-insensitive)
+            part_lower = part.lower()
+            if part_lower in category_mapping:
+                parsed_categories[part_lower] = category_mapping[part_lower]
+                print(f"   ✅ Exact match: '{part}' -> '{part_lower}' -> ID {category_mapping[part_lower]}")
+                continue
+
+            # Try partial matching with intelligent scoring (allow shorter matches for categories like "IT")
+            if len(part) >= 2:  # Allow 2-character matches for categories like "IT"
+                best_matches = []
+                for category_name, category_id in category_mapping.items():
+                    score = self._calculate_category_match_score(part_lower, category_name)
+                    # Use different thresholds based on length
+                    threshold = 0.9 if len(part) == 2 else 0.7
+                    if score > threshold:
+                        best_matches.append((category_name, category_id, score))
+
+                # Sort by score and take the best match
+                if best_matches:
+                    best_matches.sort(key=lambda x: x[2], reverse=True)
+                    best_category, best_id, best_score = best_matches[0]
+                    parsed_categories[best_category] = best_id
+                    print(f"   ✅ Partial match: '{part}' -> '{best_category}' -> ID {best_id} (score: {best_score:.2f})")
+                else:
+                    print(f"   ❌ No match found for: '{part}' (no valid partial matches)")
+            else:
+                print(f"   ❌ Skipping: '{part}' (too short for partial matching)")
+
+        print(f"🎯 Parsed {len(parsed_categories)} categories: {list(parsed_categories.keys())}")
+        return parsed_categories
+
+    def _calculate_category_match_score(self, search_term: str, category_name: str) -> float:
+        """Calculate matching score between search term and category name"""
+
+        # Exact match
+        if search_term == category_name:
+            return 1.0
+
+        # Contains match
+        if search_term in category_name or category_name in search_term:
+            return 0.8
+
+        # Word-based matching
+        search_words = set(search_term.split())
+        category_words = set(category_name.split())
+
+        if search_words & category_words:  # Common words
+            overlap = len(search_words & category_words)
+            total = len(search_words | category_words)
+            return 0.6 + (overlap / total) * 0.2
+
+        # Character similarity (simple)
+        common_chars = set(search_term) & set(category_name)
+        if common_chars:
+            return len(common_chars) / max(len(search_term), len(category_name)) * 0.4
+
+        return 0.0
+
+    def resolve_department_references(self, user_prompt: str) -> Dict[str, Any]:
+        """Resolve department names to IDs in the prompt"""
+        import re
+        import requests
+
+        print(f"🔍 Department analysis: '{user_prompt}'")
+
+        # Step 1: Fetch all available departments from the system
+        department_mapping = self._fetch_dynamic_department_mapping()
+        if not department_mapping:
+            print("❌ Failed to fetch dynamic department mapping")
+            return {'included': {}, 'excluded': {}, 'operator': 'in'}
+
+        print(f"✅ Fetched {len(department_mapping)} departments from system: {list(department_mapping.keys())}")
+
+        # Step 2: Detect department-related patterns (enhanced for multiple departments)
+        department_patterns = [
+            r'department\s+(?:is|equals?)\s+(.+?)(?:\s*$)',
+            r'(?:with|having)\s+department\s+(?:is\s+|as\s+)?(.+?)(?:\s*$)',
+            r'requests?\s+(?:with|having|where)\s+department\s+(?:is\s+|as\s+)?(.+?)(?:\s*$)',
+        ]
+
+        included_departments = {}
+        prompt_lower = user_prompt.lower()
+
+        # Step 3: Parse explicit department mentions from patterns
+        for pattern in department_patterns:
+            matches = re.findall(pattern, prompt_lower)
+            for match in matches:
+                print(f"🎯 Found department pattern: '{match}' from pattern: {pattern}")
+                parsed_departments = self._parse_dynamic_department_list(match, department_mapping)
+                included_departments.update(parsed_departments)
+
+        # Step 4: Scan for direct department name mentions (only if no pattern matches found)
+        if not included_departments:
+            for department_name, department_id in department_mapping.items():
+                # Use word boundaries to ensure exact word matches
+                if re.search(r'\b' + re.escape(department_name) + r'\b', prompt_lower):
+                    included_departments[department_name] = department_id
+                    print(f"✅ Direct department match: '{department_name}' -> ID {department_id}")
+                    # Continue to find all matching departments
+
+        # Step 5: Return result
+        result = {
+            'included': included_departments,
+            'excluded': {},  # Departments typically don't have exclusion patterns
+            'operator': 'in'
+        }
+
+        print(f"🎯 Department resolution result: {result}")
+        return result
+
+    def _fetch_dynamic_department_mapping(self) -> Dict[str, int]:
+        """Fetch all available departments from the system dynamically"""
+        import requests
+        import json
+
+        try:
+            print("🔄 Fetching dynamic department mapping from API...")
+
+            # API endpoint for department search
+            url = "https://172.16.15.113/api/department"
+
+            # Get fresh access token
+            access_token = self.get_access_token()
+            if not access_token:
+                print("❌ Cannot fetch department mapping - no access token")
+                return {}
+
+            # Headers with fresh token
+            headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Authorization': f'Bearer {access_token}',
+                'Connection': 'keep-alive',
+                'Content-Type': 'application/json',
+                'Referer': 'https://172.16.15.113/admin/organization/department',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+            }
+
+            # Make the API call (GET request for departments)
+            response = requests.get(url, headers=headers, verify=False, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                print(f"✅ Department API response received: {response.status_code}")
+
+                # Parse the response to extract department name -> ID mapping
+                department_mapping = {}
+
+                # Handle hierarchical department structure (similar to categories)
+                if isinstance(data, list):
+                    print(f"   🏢 Found list with {len(data)} department trees")
+
+                    # Extract departments from hierarchical structure
+                    def extract_departments_recursive(department_tree):
+                        """Recursively extract departments from nested structure"""
+                        departments = []
+
+                        if isinstance(department_tree, dict) and 'node' in department_tree:
+                            # Extract the main department node
+                            node = department_tree['node']
+                            if isinstance(node, dict) and 'name' in node and 'id' in node:
+                                departments.append(node)
+
+                            # Extract child departments
+                            children = department_tree.get('childrens', [])
+                            if children:
+                                for child in children:
+                                    departments.extend(extract_departments_recursive(child))
+
+                        return departments
+
+                    # Extract all departments from the tree structure
+                    all_departments = []
+                    for tree in data:
+                        all_departments.extend(extract_departments_recursive(tree))
+
+                    print(f"   🏢 Extracted {len(all_departments)} total departments from hierarchy")
+
+                    # Build department mapping
+                    for department in all_departments:
+                        if isinstance(department, dict) and 'name' in department and 'id' in department:
+                            department_id = department['id']
+                            department_name = department['name'].lower().strip()
+                            department_mapping[department_name] = department_id
+                            print(f"   🏢 Mapped: '{department_name}' -> ID {department_id}")
+
+                else:
+                    print(f"❌ Unexpected response format: {type(data)}")
+                    return {}
+
+                print(f"✅ Dynamic department mapping loaded: {len(department_mapping)} departments")
+                return department_mapping
+
+            else:
+                print(f"❌ Department API call failed: {response.status_code}")
+                print(f"   Response: {response.text[:200]}...")
+                return {}
+
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Network error fetching department mapping: {str(e)}")
+            return {}
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON decode error: {str(e)}")
+            return {}
+        except Exception as e:
+            print(f"❌ Unexpected error fetching department mapping: {str(e)}")
+            return {}
+
+    def _parse_dynamic_department_list(self, department_text: str, department_mapping: Dict[str, int]) -> Dict[str, int]:
+        """Parse department list using dynamic department mapping with intelligent matching"""
+        import re
+
+        parsed_departments = {}
+
+        print(f"🔍 Parsing department text: '{department_text}' against {len(department_mapping)} available departments")
+
+        # Split by various separators (enhanced for better parsing)
+        separators = [',', ' and ', ' or ', '&', '+', ';', ' ']
+        parts = [department_text.strip()]
+
+        # Apply separators iteratively to split the text
+        for sep in separators:
+            new_parts = []
+            for part in parts:
+                if sep in part:
+                    split_parts = [p.strip() for p in part.split(sep) if p.strip()]
+                    new_parts.extend(split_parts)
+                else:
+                    new_parts.append(part)
+            parts = new_parts
+
+        # Remove duplicates while preserving order
+        unique_parts = []
+        for part in parts:
+            if part not in unique_parts:
+                unique_parts.append(part)
+        parts = unique_parts
+
+        print(f"   🔍 Split into parts: {parts}")
+
+        # Clean and resolve each part
+        for part in parts:
+            part = re.sub(r'[^\w\s]', '', part).strip()  # Remove punctuation
+            if not part or len(part) < 2:  # Skip empty or single character parts
+                continue
+
+            print(f"   🔍 Analyzing part: '{part}' (length: {len(part)})")
+
+            # Try exact match first (case-insensitive)
+            part_lower = part.lower()
+            if part_lower in department_mapping:
+                parsed_departments[part_lower] = department_mapping[part_lower]
+                print(f"   ✅ Exact match: '{part}' -> '{part_lower}' -> ID {department_mapping[part_lower]}")
+                # Continue processing other parts for multiple departments
+                continue
+
+            # Try partial matching with intelligent scoring (only if no exact match found)
+            if len(part) >= 2:  # Allow shorter matches for departments like "IT"
+                best_matches = []
+                for department_name, department_id in department_mapping.items():
+                    # Skip if we already found this department
+                    if department_name in parsed_departments:
+                        continue
+                    score = self._calculate_department_match_score(part_lower, department_name)
+                    if score > 0.9:  # Much higher threshold for partial matching to avoid false positives
+                        best_matches.append((department_name, department_id, score))
+
+                # Sort by score and take the best match
+                if best_matches:
+                    best_matches.sort(key=lambda x: x[2], reverse=True)
+                    best_department, best_id, best_score = best_matches[0]
+                    parsed_departments[best_department] = best_id
+                    print(f"   ✅ Partial match: '{part}' -> '{best_department}' -> ID {best_id} (score: {best_score:.2f})")
+                else:
+                    print(f"   ❌ No match found for: '{part}' (no valid partial matches)")
+            else:
+                print(f"   ❌ Skipping: '{part}' (too short for partial matching)")
+
+        print(f"🎯 Parsed {len(parsed_departments)} departments: {list(parsed_departments.keys())}")
+        return parsed_departments
+
+    def _calculate_department_match_score(self, search_term: str, department_name: str) -> float:
+        """Calculate matching score between search term and department name"""
+
+        # Exact match
+        if search_term == department_name:
+            return 1.0
+
+        # Contains match
+        if search_term in department_name or department_name in search_term:
+            return 0.8
+
+        # Word-based matching
+        search_words = set(search_term.split())
+        department_words = set(department_name.split())
+
+        if search_words & department_words:  # Common words
+            overlap = len(search_words & department_words)
+            total = len(search_words | department_words)
+            return 0.6 + (overlap / total) * 0.2
+
+        # Character similarity (simple)
+        common_chars = set(search_term) & set(department_name)
+        if common_chars:
+            return len(common_chars) / max(len(search_term), len(department_name)) * 0.4
+
+        return 0.0
+
+    def resolve_subject_references(self, user_prompt: str) -> Dict[str, Any]:
+        """Resolve subject contains/equals patterns"""
+        import re
+
+        print(f"🔍 Subject analysis: '{user_prompt}'")
+
+        # Subject patterns
+        subject_patterns = [
+            r'subject\s+contains\s+([a-z\s]+?)(?:\s+and\s+(?!subject)|$)',
+            r'subject\s+(?:is|equals?)\s+([a-z\s]+?)(?:\s+and\s+(?!subject)|$)',
+            r'(?:with|having)\s+subject\s+(?:contains|is|equals?)\s+([a-z\s]+?)(?:\s+and\s+(?!subject)|$)',
+        ]
+
+        subject_filters = []
+        prompt_lower = user_prompt.lower()
+        seen_subjects = set()  # Track seen subjects to avoid duplicates
+
+        for pattern in subject_patterns:
+            matches = re.findall(pattern, prompt_lower)
+            for match in matches:
+                subject_text = match.strip()
+                if subject_text and subject_text not in seen_subjects:
+                    print(f"🎯 Found subject pattern: '{subject_text}'")
+
+                    # Determine operator based on pattern
+                    if 'contains' in pattern:
+                        operator = 'contains'
+                    else:
+                        operator = 'equal'
+
+                    subject_filters.append({
+                        'text': subject_text,
+                        'operator': operator
+                    })
+                    seen_subjects.add(subject_text)
+
+        result = {
+            'filters': subject_filters
+        }
+
+        print(f"🎯 Subject resolution result: {result}")
+        return result
 
     def resolve_status_references(self, user_prompt: str) -> Dict[str, Any]:
         """Dynamic status resolution using live API data - NO STATIC MAPPINGS"""
@@ -907,6 +1471,7 @@ class MultiEndpointAgent:
             r'\bpriority\s+(?:is|are|in|equals?)',
             r'\burgency\s+(?:is|are|in|equals?)',
             r'\bcategory\s+(?:is|are|in|equals?)',
+            r'\bdepartment\s+(?:is|are|in|equals?)',
             r'\bassignee\s+(?:is|are|in|equals?)',
             r'\brequester\s+(?:is|are|in|equals?)'
         ]
@@ -1053,6 +1618,8 @@ class MultiEndpointAgent:
             r'priority\s+(?:is|are|in|includes?)\s+([a-z\s,]+?)(?:\s+(?:and|or)\s+(?!priority)[a-z\s,]+?)*',
             # Pattern for "priority is X and Y" format
             r'priority\s+(?:is|are|equals?)\s+([a-z\s,]+?)(?:\s+and\s+(?!priority)[a-z\s,]+?)*',
+            # Pattern for "priority as X" format
+            r'priority\s+(?:as)\s+([a-z\s,]+?)(?:\s+and\s+(?!priority)|$)',
             # Pattern for "with/having priority X, Y"
             r'(?:with|having)\s+priority\s+([a-z\s,]+?)(?:\s+(?:and|or)\s+[a-z\s,]+?)*',
             # Pattern for "X priority" format
@@ -1124,6 +1691,123 @@ class MultiEndpointAgent:
                     }
                 }
             })
+
+    def _add_category_filter(self, quals: list, category_result: Dict[str, Any]):
+        """Add category filter using VariableOperandRest structure"""
+        if not category_result or (not category_result.get('included') and not category_result.get('excluded')):
+            return
+
+        # Handle inclusion filters
+        if category_result.get('included'):
+            included_ids = list(category_result['included'].values())
+            print(f"🎯 Creating category inclusion filter: {included_ids}")
+            quals.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "VariableOperandRest",
+                    "value": "categoryId"
+                },
+                "operator": "in",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "ListLongValueRest",
+                        "value": included_ids
+                    }
+                }
+            })
+
+        # Handle exclusion filters
+        if category_result.get('excluded'):
+            excluded_ids = list(category_result['excluded'].values())
+            print(f"🎯 Creating category exclusion filter: {excluded_ids}")
+            quals.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "VariableOperandRest",
+                    "value": "categoryId"
+                },
+                "operator": "not_in",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "ListLongValueRest",
+                        "value": excluded_ids
+                    }
+                }
+            })
+
+    def _add_department_filter(self, quals: list, department_result: Dict[str, Any]):
+        """Add department filter using VariableOperandRest structure"""
+        if not department_result or (not department_result.get('included') and not department_result.get('excluded')):
+            return
+
+        # Handle inclusion filters
+        if department_result.get('included'):
+            included_ids = list(department_result['included'].values())
+            print(f"🎯 Creating department inclusion filter: {included_ids}")
+            quals.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "VariableOperandRest",
+                    "value": "departmentId"
+                },
+                "operator": "in",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "ListLongValueRest",
+                        "value": included_ids
+                    }
+                }
+            })
+
+        # Handle exclusion filters
+        if department_result.get('excluded'):
+            excluded_ids = list(department_result['excluded'].values())
+            print(f"🎯 Creating department exclusion filter: {excluded_ids}")
+            quals.append({
+                "type": "RelationalQualificationRest",
+                "leftOperand": {
+                    "type": "VariableOperandRest",
+                    "value": "departmentId"
+                },
+                "operator": "not_in",
+                "rightOperand": {
+                    "type": "ValueOperandRest",
+                    "value": {
+                        "type": "ListLongValueRest",
+                        "value": excluded_ids
+                    }
+                }
+            })
+
+    def _add_subject_filter(self, quals: list, subject_result: Dict[str, Any]):
+        """Add subject filter using PropertyOperandRest structure"""
+        if not subject_result or not subject_result.get('filters'):
+            return
+
+        for subject_filter in subject_result['filters']:
+            text = subject_filter.get('text', '')
+            operator = subject_filter.get('operator', 'contains')
+
+            if text:
+                print(f"🎯 Creating subject {operator} filter: '{text}'")
+                quals.append({
+                    "type": "RelationalQualificationRest",
+                    "leftOperand": {
+                        "type": "PropertyOperandRest",
+                        "key": "request.subject"
+                    },
+                    "operator": operator,
+                    "rightOperand": {
+                        "type": "ValueOperandRest",
+                        "value": {
+                            "type": "StringValueRest",
+                            "value": text
+                        }
+                    }
+                })
 
     def _add_business_logic_filters(self, quals: list, user_prompt: str):
         """Add complex business logic filters"""
@@ -1277,12 +1961,24 @@ class MultiEndpointAgent:
         urgency_refs = self.resolve_urgency_references(user_prompt)
         status_result = self.resolve_status_references(user_prompt)
         priority_result = self.resolve_priority_references(user_prompt)
+        category_result = self.resolve_category_references(user_prompt)
+        department_result = self.resolve_department_references(user_prompt)
+        subject_result = self.resolve_subject_references(user_prompt)
 
         # Add status filter - Enhanced for inclusion/exclusion scenarios
         self._add_multi_value_filter(quals, status_result, "request.statusId", "status")
 
         # Add priority filter - Enhanced for inclusion/exclusion scenarios
         self._add_multi_value_filter(quals, priority_result, "request.priorityId", "priority")
+
+        # Add category filter - Enhanced for inclusion/exclusion scenarios (using VariableOperandRest)
+        self._add_category_filter(quals, category_result)
+
+        # Add department filter - Enhanced for inclusion/exclusion scenarios (using VariableOperandRest)
+        self._add_department_filter(quals, department_result)
+
+        # Add subject filter - Enhanced for contains/equals scenarios
+        self._add_subject_filter(quals, subject_result)
 
         # Add business logic filters for complex scenarios
         self._add_business_logic_filters(quals, user_prompt)

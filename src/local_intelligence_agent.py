@@ -38,9 +38,8 @@ class LocalIntelligenceAgent:
             'closed': ['closed', 'finished', 'archived']
         }
         
+        # Note: today/yesterday patterns moved to enhanced date detection in _detect_time_filters
         self.time_patterns = {
-            r'\btoday\b': ('within_last', 1, 'days'),
-            r'\byesterday\b': ('within_last', 1, 'days'),
             r'\blast\s+week\b': ('within_last', 7, 'days'),
             r'\blast\s+month\b': ('within_last', 30, 'days'),
             r'\blast\s+(\d+)\s+days?\b': ('within_last', None, 'days'),
@@ -208,16 +207,58 @@ class LocalIntelligenceAgent:
         return quals
 
     def _detect_time_filters(self, prompt: str) -> List[Dict]:
-        """Detect time-related filters"""
+        """Detect time-related filters with enhanced date handling"""
         quals = []
-        
-        for pattern, (operator, value, unit) in self.time_patterns.items():
+
+        # Enhanced date patterns for today/yesterday (use request.createdTime)
+        enhanced_date_patterns = {
+            r'\btoday\b': ('equal', 'today'),
+            r'\byesterday\b': ('equal', 'yesterday'),
+            r'\bcreated\s+today\b': ('equal', 'today'),
+            r'\bcreated\s+yesterday\b': ('equal', 'yesterday'),
+            r'\bmade\s+today\b': ('equal', 'today'),
+            r'\bmade\s+yesterday\b': ('equal', 'yesterday')
+        }
+
+        # Check for enhanced date patterns first (today/yesterday)
+        for pattern, (operator, value) in enhanced_date_patterns.items():
+            if re.search(pattern, prompt):
+                field_key = "request.createdTime"
+                operand_type = "PropertyOperandRest"
+
+                # Create appropriate filter based on operator
+                if operator == "equal" and value in ["today", "yesterday"]:
+                    # Use PropertyOperandRest with VariableOperandRest for today/yesterday
+                    quals.append({
+                        "type": "RelationalQualificationRest",
+                        "leftOperand": {"key": field_key, "type": operand_type},
+                        "operator": operator,
+                        "rightOperand": {
+                            "type": "VariableOperandRest",
+                            "value": value
+                        }
+                    })
+                    print(f"🎯 Date filter: {field_key} {operator} {value}")
+                    return quals  # Return immediately for today/yesterday
+
+        # Fallback to relative time patterns (last week, last month, etc.)
+        relative_time_patterns = {
+            r'\blast\s+week\b': ('within_last', 7, 'days'),
+            r'\blast\s+month\b': ('within_last', 30, 'days'),
+            r'\blast\s+(\d+)\s+days?\b': ('within_last', None, 'days'),
+            r'\bpast\s+(\d+)\s+days?\b': ('within_last', None, 'days'),
+            r'\bin\s+the\s+last\s+(\d+)\s+days?\b': ('within_last', None, 'days'),
+            r'\bwithin\s+(\d+)\s+days?\b': ('within_last', None, 'days')
+        }
+
+        for pattern, (operator, value, unit) in relative_time_patterns.items():
             match = re.search(pattern, prompt)
             if match:
                 if value is None and match.groups():
                     value = int(match.group(1))
-                
+
                 quals.append({
+                    "type": "RelationalQualificationRest",
                     "leftOperand": {"key": "created_date", "type": "VariableOperandRest"},
                     "operator": operator,
                     "rightOperand": {
@@ -227,7 +268,7 @@ class LocalIntelligenceAgent:
                 })
                 print(f"🎯 Time filter: {operator} {value} {unit}")
                 break
-        
+
         return quals
 
     def _detect_text_filters(self, prompt: str) -> List[Dict]:
