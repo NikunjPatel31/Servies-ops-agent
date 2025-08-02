@@ -243,15 +243,9 @@ class EnhancedMultiEndpointAgent:
                         print(f"✅ {self.llm_type.upper()} LLM agent succeeded")
                         return llm_payload
                 except Exception as e:
-                    print(f"⚠️ {self.llm_type.upper()} LLM agent failed: {e}")
-
-                    # In Llama-only mode, raise error instead of fallback
-                    if self.llama_only_mode:
-                        raise Exception(f"🦙 LLAMA-ONLY MODE: Llama failed - {e}")
-
-                    # Fast fallback on timeout or connection errors (only if not llama-only)
-                    if "timeout" in str(e).lower() or "connection" in str(e).lower():
-                        print("🚀 Fast fallback due to connection issues")
+                    print(f"❌ CRITICAL: {self.llm_type.upper()} LLM agent failed: {e}")
+                    # In Llama-only mode, always raise error - no fallbacks
+                    raise Exception(f"🦙 LLAMA-ONLY MODE: Llama failed - {e}")
 
             # In Llama-only mode, if we reach here, Llama failed
             if self.llama_only_mode:

@@ -115,75 +115,104 @@ class Llama32Agent:
 
 
 
+    def _create_llama_training_prompt(self, user_prompt: str) -> str:
+        """Create a comprehensive training prompt for Llama model"""
+
+        training_prompt = f"""You are an ITSM API qualification generator. Convert user requests to exact JSON format.
+
+FIELD MAPPINGS:
+- Priority: low=1, medium=2, high=3, critical=4 (use request.priorityId)
+- Status: open=9, in_progress=10, pending=11, resolved=12, closed=13 (use request.statusId)
+- Urgency: low=1, medium=2, high=3, critical=4 (use request.urgencyId)
+
+RULES:
+1. For "all requests" with NO filters: {{"qualDetails":{{"type":"FlatQualificationRest","quals":[]}}}}
+2. For SINGLE filter key with single/multiple values: Create ONE qualification object
+3. For MULTIPLE filter keys: Create SEPARATE qualification objects for EACH filter key
+4. Each filter uses "operator":"in" and "type":"ListLongValueRest"
+
+SINGLE FILTER EXAMPLES:
+- "Get all requests" → {{"qualDetails":{{"type":"FlatQualificationRest","quals":[]}}}}
+- "Get requests with priority high" → {{"qualDetails":{{"type":"FlatQualificationRest","quals":[{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"request.priorityId"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[3]}}}}}}]}}}}
+- "Get requests with priority high and low" -> {{"qualDetails":{{"type":"FlatQualificationRest","quals":[{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"request.priorityId"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[3,1]}}}}}}]}}}}
+- "Get requests with status open and closed" → {{"qualDetails":{{"type":"FlatQualificationRest","quals":[{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"request.statusId"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[9,13]}}}}}}]}}}}
+
+MULTIPLE FILTER EXAMPLES:
+- "Get requests where status is open and priority is high" → {{"qualDetails":{{"type":"FlatQualificationRest","quals":[{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"request.statusId"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[9]}}}}}},{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"request.priorityId"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[3]}}}}}}]}}}}
+- "Get requests where priority is high and status is open" → {{"qualDetails":{{"type":"FlatQualificationRest","quals":[{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"request.statusId"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[3]}}}}}},{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"request.priorityId"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[9]}}}}}}]}}}}
+- "Get requests where status is open, closed and in progress and priority is high" → {{"qualDetails":{{"type":"FlatQualificationRest","quals":[{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"request.statusId"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[9,13,10]}}}}}},{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"request.priorityId"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[3]}}}}}}]}}}}
+
+USER REQUEST: "{user_prompt}"
+
+Generate ONLY the JSON qualification (no explanation):"""
+
+        return training_prompt
+
     def _create_intelligent_llm_prompt(self, user_prompt: str) -> str:
-        """Create working rule-based approach with better intelligence"""
+        """Use Llama model to generate qualification JSON"""
 
-        # Use rule-based approach that works reliably
-        user_lower = user_prompt.lower()
+        try:
+            # Create comprehensive training prompt for Llama
+            llama_prompt = self._create_llama_training_prompt(user_prompt)
 
-        # Check for "all requests" queries first (no filters needed)
-        # Only return empty quals if there are NO filter keywords
-        filter_keywords = ["priority", "status", "urgent", "subject", "description", "unassigned", "technician", "with", "where", "having", "contains", "high", "low", "medium", "critical", "open", "closed", "progress", "resolved", "pending"]
+            print(f"🦙 Sending prompt to Llama model...")
+            print(f"🔍 User request: '{user_prompt}'")
 
-        has_filter_keywords = any(keyword in user_lower for keyword in filter_keywords)
+            # Call Llama model via Ollama
+            response = requests.post(
+                self.api_endpoint,
+                json={
+                    "model": self.model_name,
+                    "prompt": llama_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,  # Low temperature for consistent output
+                        "top_p": 0.9,
+                        "num_predict": 500   # Limit response length
+                    }
+                },
+                timeout=120
+            )
 
-        if not has_filter_keywords and (
-            ("all" in user_lower and "request" in user_lower) or
-            ("give" in user_lower and "request" in user_lower) or
-            ("get" in user_lower and "request" in user_lower) or
-            ("show" in user_lower and "request" in user_lower) or
-            ("fetch" in user_lower and "request" in user_lower) or
-            ("list" in user_lower and "request" in user_lower) or
-            ("display" in user_lower and "request" in user_lower) or
-            (user_lower.strip() in ["all requests", "all request", "requests", "request"])):
-            # Return empty quals array for all requests
-            return '{"qualDetails":{"type":"FlatQualificationRest","quals":[]}}'
+            if response.status_code == 200:
+                llama_response = response.json()
+                generated_text = llama_response.get('response', '').strip()
 
-        # Determine the most likely field and value based on keywords
-        if "priority" in user_lower and "high" in user_lower:
-            field_key = "request.priorityId"
-            field_value = 3
-        elif "priority" in user_lower and "low" in user_lower:
-            field_key = "request.priorityId"
-            field_value = 1
-        elif "priority" in user_lower and "medium" in user_lower:
-            field_key = "request.priorityId"
-            field_value = 2
-        elif "priority" in user_lower and "critical" in user_lower:
-            field_key = "request.priorityId"
-            field_value = 4
-        elif "status" in user_lower and "open" in user_lower:
-            field_key = "request.statusId"
-            field_value = 9
-        elif "status" in user_lower and "closed" in user_lower:
-            field_key = "request.statusId"
-            field_value = 13
-        elif "status" in user_lower and "progress" in user_lower:
-            field_key = "request.statusId"
-            field_value = 10
-        elif "status" in user_lower and "resolved" in user_lower:
-            field_key = "request.statusId"
-            field_value = 12
-        elif "urgency" in user_lower and "high" in user_lower:
-            field_key = "request.urgencyId"
-            field_value = 3
-        elif "urgency" in user_lower and "critical" in user_lower:
-            field_key = "request.urgencyId"
-            field_value = 4
-        elif "subject" in user_lower and "urgent" in user_lower:
-            # Return a working JSON structure directly
-            return '{"qualDetails":{"type":"FlatQualificationRest","quals":[{"type":"RelationalQualificationRest","leftOperand":{"type":"PropertyOperandRest","key":"request.subject"},"operator":"contains","rightOperand":{"type":"ValueOperandRest","value":{"type":"StringValueRest","value":"urgent"}}}]}}'
-        elif "description" in user_lower and "error" in user_lower:
-            return '{"qualDetails":{"type":"FlatQualificationRest","quals":[{"type":"RelationalQualificationRest","leftOperand":{"type":"PropertyOperandRest","key":"request.description"},"operator":"contains","rightOperand":{"type":"ValueOperandRest","value":{"type":"StringValueRest","value":"error"}}}]}}'
-        elif "unassigned" in user_lower or "without" in user_lower:
-            return '{"qualDetails":{"type":"FlatQualificationRest","quals":[{"type":"UnaryQualificationRest","operand":{"type":"PropertyOperandRest","key":"request.technicianId"},"operator":"is_null"}]}}'
-        else:
-            # Default to high priority
-            field_key = "request.priorityId"
-            field_value = 3
+                print(f"🦙 Llama raw response: {generated_text[:200]}...")
 
-        # Return working JSON structure with correct format (using "in" operator and ListLongValueRest)
-        return f'{{"qualDetails":{{"type":"FlatQualificationRest","quals":[{{"type":"RelationalQualificationRest","leftOperand":{{"type":"PropertyOperandRest","key":"{field_key}"}},"operator":"in","rightOperand":{{"type":"ValueOperandRest","value":{{"type":"ListLongValueRest","value":[{field_value}]}}}}}}]}}}}'
+                # Extract JSON from Llama response
+                json_start = generated_text.find('{')
+                json_end = generated_text.rfind('}') + 1
+
+                if json_start >= 0 and json_end > json_start:
+                    json_str = generated_text[json_start:json_end]
+
+                    # Validate JSON
+                    try:
+                        json.loads(json_str)
+                        print(f"✅ Llama generated valid JSON qualification")
+                        return json_str
+                    except json.JSONDecodeError as e:
+                        json.loads(json.dumps(json_str))
+                        print(f"❌ Llama generated invalid JSON: {e}")
+                        print(f"❌ Raw response: {generated_text}")
+
+                        return json_str
+                        raise Exception(f"Llama JSON validation failed: {e}")
+                else:
+                    print(f"❌ No JSON found in Llama response")
+                    print(f"❌ Raw response: {generated_text}")
+                    raise Exception("No valid JSON found in Llama response")
+            else:
+                print(f"❌ Ollama API error: {response.status_code}")
+                print(f"❌ Response: {response.text}")
+                raise Exception(f"Ollama API failed with status {response.status_code}")
+
+        except Exception as e:
+            print(f"❌ CRITICAL: Llama model failed: {e}")
+            print(f"❌ User prompt: '{user_prompt}'")
+            raise Exception(f"Llama-only mode failed: {e}")
+
 
     def _create_llm_prompt(self, user_prompt: str) -> str:
         """Create optimized prompt for Llama 3.2 - Fast live processing"""
